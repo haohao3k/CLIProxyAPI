@@ -223,6 +223,7 @@ func baselineExecutorAuths() []*coreauth.Auth {
 		"xai",
 		"devin",
 		"meta",
+		"zai",
 		"openai-compatibility",
 	}
 	auths := make([]*coreauth.Auth, 0, len(providers))
@@ -330,6 +331,9 @@ func (s *Service) registerExecutorForAuth(a *coreauth.Auth, forceReplace bool) {
 		s.coreManager.RegisterExecutor(executor.NewDevinExecutor(cfg))
 	case "meta":
 		s.coreManager.RegisterExecutor(executor.NewMetaExecutor(cfg))
+	case "zai":
+		// Z.ai GLM Coding Plan speaks OpenAI chat completions upstream.
+		s.registerOpenAICompatProviderExecutor("zai", a, cfg, forceReplace, false)
 	default:
 		providerKey := strings.ToLower(strings.TrimSpace(a.Provider))
 		if providerKey == "" {

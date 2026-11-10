@@ -423,6 +423,8 @@ func (h *Handler) StartOAuthV8(c *gin.Context) {
 		h.RequestMetaToken(c)
 	case "mistral", "mistral-vibe":
 		h.RequestMistralToken(c)
+	case "zai", "z.ai", "zcode", "glm":
+		h.RequestZAIToken(c)
 	default:
 		if !h.ServePluginAuthURL(c) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "provider_not_found"})

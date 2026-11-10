@@ -29,6 +29,7 @@ var oauthProviders = []oauthProvider{
 	{"xAI", "xai-auth-url", "⬛", true},
 	{"Meta", "meta-auth-url", "🔵", true},
 	{"Mistral (Vibe)", "mistral-auth-url", "🟠", true},
+	{"Z.ai (GLM Coding)", "zai-auth-url", "🟦", true},
 }
 
 // oauthTabModel handles OAuth login flows.
@@ -368,6 +369,8 @@ func (m oauthTabModel) submitCallback(callbackURL string) tea.Cmd {
 					providerKey = "meta"
 				case "mistral-auth-url":
 					providerKey = "mistral"
+				case "zai-auth-url":
+					providerKey = "zai"
 				}
 				break
 			}

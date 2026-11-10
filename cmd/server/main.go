@@ -123,6 +123,7 @@ func main() {
 	var mistralAPIKey string
 	var mistralVibeEnv string
 	var mistralLabel string
+	var zaiLogin bool
 	var discoverGateways bool
 	var discoverTimeout int
 	var discoverJSON bool
@@ -160,6 +161,7 @@ func main() {
 	flag.StringVar(&mistralAPIKey, "mistral-api-key", "", "Mistral API key override (use with -mistral-import)")
 	flag.StringVar(&mistralVibeEnv, "mistral-vibe-env", "", "Path to the Mistral Vibe .env file (use with -mistral-import)")
 	flag.StringVar(&mistralLabel, "mistral-label", "", "Custom label for the saved auth file (use with -mistral-import)")
+	flag.BoolVar(&zaiLogin, "zai-login", false, "Login to Z.ai (GLM Coding Plan) using OAuth")
 	flag.BoolVar(&discoverGateways, "discover", false, "Discover local AI gateways and CPA instances on the LAN")
 	flag.IntVar(&discoverTimeout, "discover-timeout", 3, "Timeout in seconds for LAN discovery (default 3s)")
 	flag.BoolVar(&discoverJSON, "discover-json", false, "Output discovered gateways in JSON format")
@@ -673,7 +675,7 @@ func main() {
 		ProxyURL:     loginProxyURL,
 	}
 
-	commandMode := vertexImport != "" || siwcBind != "" || antigravityLogin || codexLogin || codexDeviceLogin || claudeLogin || kimiLogin || kimiAILogin || cursorLogin || xaiLogin || devinLogin || metaLogin || mistralLogin || mistralImport
+	commandMode := vertexImport != "" || siwcBind != "" || antigravityLogin || codexLogin || codexDeviceLogin || claudeLogin || kimiLogin || kimiAILogin || cursorLogin || xaiLogin || devinLogin || metaLogin || mistralLogin || mistralImport || zaiLogin
 	cloudConfigMissing := isCloudDeploy && !configFileExists
 	homeMode := configLoadedFromHome || (cfg != nil && cfg.Home.Enabled)
 	exampleAPIKeySafeMode := shouldEnableExampleAPIKeySafeMode(cfg, commandMode, tuiMode, standalone, cloudConfigMissing, homeMode)
@@ -766,6 +768,8 @@ func main() {
 			VibeEnvPath: mistralVibeEnv,
 			Label:       mistralLabel,
 		})
+	} else if zaiLogin {
+		cmd.DoZAILogin(cfg, options)
 	} else {
 		// In cloud deploy mode without config file, just wait for shutdown signals
 		if isCloudDeploy && !configFileExists {
@@ -989,8 +993,8 @@ func argvEnablesBoolFlag(args []string, name string) bool {
 func argvFlagConsumesValue(name string) bool {
 	switch name {
 	case "codex-login", "codex-device-login", "claude-login", "no-browser",
-		"antigravity-login", "kimi-login", "kimi-ai-login", "xai-login", "devin-login", "meta-login",
-		"mistral-login", "mistral-import",
+		"antigravity-login", "kimi-login", "kimi-ai-login", "cursor-login", "xai-login", "devin-login", "meta-login",
+		"mistral-login", "mistral-import", "zai-login",
 		"discover", "discover-json", "home-disable-cluster-discovery",
 		"tui", "standalone", "local-model":
 		return false

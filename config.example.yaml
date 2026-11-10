@@ -1004,17 +1004,16 @@ upstream:
 #         - name: "kimi-k2.5"
 #           alias: "claude-opus-4.66"
 #
-#     # A generic OpenAI Responses API upstream (e.g. the OpenAI platform or any vendor exposing /v1/responses).
-#     # Requests are translated to the Responses format without Codex-specific headers or cloaking.
-#     # Payload rules match these requests with protocol: "codex" (the Responses-shaped payload protocol).
-#     - name: "openai-platform"
-#       base-url: "https://api.openai.com/v1"
-#       wire-api: "responses"
-#       keys:
-#         - api-key: "sk-..."
-#       models:
-#         - name: "gpt-5.1"
-#           alias: "gpt-5.1"
+#     # A generic OpenAI Responses API upstream (e.g. the OpenAI platform or any vendor exposing /v1/responses)
+#     # can set wire-api: "responses" at the provider level or per model:
+#     # - name: "openai-platform"
+#     #   base-url: "https://api.openai.com/v1"
+#     #   wire-api: "responses"
+#     #   keys:
+#     #     - api-key: "sk-..."
+#     #   models:
+#     #     - name: "gpt-5.1"
+#     #       alias: "gpt-5.1"
 #
 #   # Mistral (https://api.mistral.ai/v1) is served through the OpenAI-compatibility
 #   # executor. Instead of declaring it here you can save a "mistral" credential file:
@@ -1035,6 +1034,28 @@ upstream:
 #   #           levels: ["none", "low", "medium", "high"]
 #   #       - name: "devstral-small-latest"
 #   #         alias: "devstral-small"
+#
+#   # Z.ai GLM Coding Plan (https://api.z.ai/api/coding/paas/v4) is served through
+#   # the OpenAI-compatibility executor. You can either run OAuth login:
+#   #   cli-proxy-api -zai-login
+#   # (or GET /v0/management/zai-auth-url, /v8/management/oauth/auth-url?provider=zai),
+#   # drop an auth file {"type": "zai", "api_key": "YOUR_ZAI_CODING_KEY"} into auth-dir,
+#   # or configure it under openai-compatibility (or under claude-api-key with
+#   # base-url: "https://api.z.ai/api/anthropic"):
+#   # openai-compatibility:
+#   #   - name: "zai"
+#   #     base-url: "https://api.z.ai/api/coding/paas/v4"
+#   #     keys:
+#   #       - api-key: "YOUR_ZAI_CODING_KEY"
+#   #     models:
+#   #       - name: "glm-5.3"
+#   #       - name: "glm-5.3-flash"
+#   #       - name: "glm-5.2"
+#   #       - name: "glm-5.1"
+#   #       - name: "glm-5-turbo"
+#   #       - name: "glm-5"
+#   #       - name: "glm-4.7"
+#   #       - name: "glm-4.6v"
 
 # END API KEY EXAMPLES
 

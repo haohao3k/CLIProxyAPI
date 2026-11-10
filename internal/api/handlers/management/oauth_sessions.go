@@ -658,6 +658,8 @@ func NormalizeOAuthProvider(provider string) (string, error) {
 		return "meta", nil
 	case "mistral", "mistral-vibe":
 		return "mistral", nil
+	case "zai", "z.ai", "zcode", "glm":
+		return "zai", nil
 	default:
 		return "", errUnsupportedOAuthFlow
 	}

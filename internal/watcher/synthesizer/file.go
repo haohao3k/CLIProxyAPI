@@ -14,6 +14,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/codex"
 	kimiauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/kimi"
+	zaiauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/zai"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
@@ -304,6 +305,11 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 		if a.Attributes["base_url"] == "" {
 			a.Attributes["base_url"] = kimiauth.ResolveKimiAPIBaseURL(resolvedDomain)
 		}
+	}
+	// For Z.ai GLM Coding Plan auth files, expose base_url and api_key to the
+	// OpenAI-compatible executor.
+	if provider == zaiauth.ProviderKey {
+		zaiauth.ApplyAuthFileAttributes(a, metadata)
 	}
 	// For codex auth files, extract plan_type from metadata or JWT id_token.
 	if provider == "codex" {
