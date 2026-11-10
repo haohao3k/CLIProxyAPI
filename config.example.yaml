@@ -1056,8 +1056,31 @@ upstream:
 #   #       - name: "glm-5"
 #   #       - name: "glm-4.7"
 #   #       - name: "glm-4.6v"
+#
+#   # OpenCode Go (https://opencode.ai/zen/go/v1) is served through the OpenAI-compatibility
+#   # executor with automatic per-model /chat/completions vs /responses routing.
+#   # You can import an OpenCode Go API key via CLI:
+#   #   cli-proxy-api -opencode-import -opencode-api-key "YOUR_OPENCODE_KEY"
+#   # (or POST /v0/management/opencode/import, /v8/management/oauth/import?provider=opencode),
+#   # drop an auth file {"type": "opencode", "api_key": "YOUR_OPENCODE_KEY"} into auth-dir,
+#   # or configure it under openai-compatibility.
 
 # END API KEY EXAMPLES
+
+# Ordered model fallback chains ("combos") exposed in /v1/models.
+# When a client requests a combo name as the model:
+#   - strategy: "fallback" (default) tries models in exact top-to-bottom order (0, 1, 2, ...),
+#     never rotating when healthy so session-affinity and upstream prompt caches remain 100% intact.
+#   - strategy: "round-robin" rotates the starting candidate across requests and still falls back on error.
+# combos:
+#   - name: "coding-primary"
+#     strategy: "fallback"
+#     models:
+#       - "gpt-5.3-codex(medium)"
+#       - "claude-sonnet-4-5-20250929"
+#       - "glm-5.3"
+#       - "devstral-medium-latest"
+#     disabled: false
 
 # OAuth/file-backed credentials. Token material stays in the credential store.
 oauth:

@@ -146,7 +146,7 @@ func (e *OpenAICompatExecutor) executeWithCredentials(ctx context.Context, auth 
 	if opts.Alt == "responses/compact" {
 		to = sdktranslator.FromString("openai-response")
 		endpoint = "/responses/compact"
-	} else if e.usesResponsesWire(auth, compat, baseModel, requestedModel) {
+	} else if e.usesResponsesWire(auth, compat, baseURL, from, baseModel, requestedModel) {
 		useResponsesWire = true
 		to = helps.OpenAICompatResponsesTarget(from)
 		endpoint = "/responses"
@@ -419,7 +419,7 @@ func (e *OpenAICompatExecutor) executeStreamWithCredentials(ctx context.Context,
 	to := sdktranslator.FromString("openai")
 	endpoint := "/chat/completions"
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
-	useResponsesWire := opts.Alt != "responses/compact" && e.usesResponsesWire(auth, compat, baseModel, requestedModel)
+	useResponsesWire := opts.Alt != "responses/compact" && e.usesResponsesWire(auth, compat, baseURL, from, baseModel, requestedModel)
 	if useResponsesWire {
 		to = helps.OpenAICompatResponsesTarget(from)
 		endpoint = "/responses"
@@ -1302,10 +1302,16 @@ func (e *OpenAICompatExecutor) resolveCompatConfig(auth *cliproxyauth.Auth, req 
 }
 
 // usesResponsesWire reports whether the request targets the upstream Responses API.
-func (e *OpenAICompatExecutor) usesResponsesWire(auth *cliproxyauth.Auth, compat *config.OpenAICompatibility, baseModel, requestedModel string) bool {
+func (e *OpenAICompatExecutor) usesResponsesWire(auth *cliproxyauth.Auth, compat *config.OpenAICompatibility, baseURL string, from sdktranslator.Format, baseModel, requestedModel string) bool {
 	var attrWireAPI string
 	if auth != nil && auth.Attributes != nil {
 		attrWireAPI = auth.Attributes["wire_api"]
+	}
+	if helps.OpenAICompatHasExplicitWireAPI(compat, attrWireAPI, baseModel, requestedModel) {
+		return helps.OpenAICompatUsesResponsesWire(compat, attrWireAPI, baseModel, requestedModel)
+	}
+	if helps.IsOpencodeUpstream(e.Identifier(), auth, compat, baseURL) {
+		return helps.ShouldUseOpencodeResponsesWire(from, baseModel, requestedModel)
 	}
 	return helps.OpenAICompatUsesResponsesWire(compat, attrWireAPI, baseModel, requestedModel)
 }

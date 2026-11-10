@@ -43,8 +43,9 @@ type staticModelsJSON struct {
 	Devin       []*ModelInfo `json:"devin"`
 	Meta        []*ModelInfo `json:"meta"`
 	// Mistral is optional: when absent, GetMistralModels serves the built-in list.
-	Mistral []*ModelInfo `json:"mistral,omitempty"`
-	ZAI     []*ModelInfo `json:"zai,omitempty"`
+	Mistral  []*ModelInfo `json:"mistral,omitempty"`
+	ZAI      []*ModelInfo `json:"zai,omitempty"`
+	Opencode []*ModelInfo `json:"opencode,omitempty"`
 }
 
 // GetClaudeModels returns the standard Claude model definitions.
@@ -671,6 +672,8 @@ func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 		return GetMistralModels()
 	case "zai", "z.ai", "glm":
 		return GetZAIModels()
+	case "opencode", "opencode-go", "ocg", "opencode_go":
+		return GetOpencodeModels()
 	default:
 		return nil
 	}
@@ -728,6 +731,7 @@ func LookupStaticModelInfo(modelID string) *ModelInfo {
 		GetMetaModels(),
 		GetMistralModels(),
 		GetZAIModels(),
+		GetOpencodeModels(),
 	}
 	for _, models := range allModels {
 		for _, m := range models {

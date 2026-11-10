@@ -123,6 +123,10 @@ func main() {
 	var mistralAPIKey string
 	var mistralVibeEnv string
 	var mistralLabel string
+	var opencodeImport bool
+	var opencodeAPIKey string
+	var opencodeAuthFile string
+	var opencodeLabel string
 	var zaiLogin bool
 	var discoverGateways bool
 	var discoverTimeout int
@@ -161,6 +165,10 @@ func main() {
 	flag.StringVar(&mistralAPIKey, "mistral-api-key", "", "Mistral API key override (use with -mistral-import)")
 	flag.StringVar(&mistralVibeEnv, "mistral-vibe-env", "", "Path to the Mistral Vibe .env file (use with -mistral-import)")
 	flag.StringVar(&mistralLabel, "mistral-label", "", "Custom label for the saved auth file (use with -mistral-import)")
+	flag.BoolVar(&opencodeImport, "opencode-import", false, "Import OpenCode Go API key (~/.local/share/opencode/auth.json or OPENCODE_API_KEY)")
+	flag.StringVar(&opencodeAPIKey, "opencode-api-key", "", "OpenCode Go API key override (use with -opencode-import)")
+	flag.StringVar(&opencodeAuthFile, "opencode-auth-file", "", "Path to the OpenCode auth.json file (use with -opencode-import)")
+	flag.StringVar(&opencodeLabel, "opencode-label", "", "Custom label for the saved OpenCode Go auth file (use with -opencode-import)")
 	flag.BoolVar(&zaiLogin, "zai-login", false, "Login to Z.ai (GLM Coding Plan) using OAuth")
 	flag.BoolVar(&discoverGateways, "discover", false, "Discover local AI gateways and CPA instances on the LAN")
 	flag.IntVar(&discoverTimeout, "discover-timeout", 3, "Timeout in seconds for LAN discovery (default 3s)")
@@ -675,7 +683,7 @@ func main() {
 		ProxyURL:     loginProxyURL,
 	}
 
-	commandMode := vertexImport != "" || siwcBind != "" || antigravityLogin || codexLogin || codexDeviceLogin || claudeLogin || kimiLogin || kimiAILogin || cursorLogin || xaiLogin || devinLogin || metaLogin || mistralLogin || mistralImport || zaiLogin
+	commandMode := vertexImport != "" || siwcBind != "" || antigravityLogin || codexLogin || codexDeviceLogin || claudeLogin || kimiLogin || kimiAILogin || cursorLogin || xaiLogin || devinLogin || metaLogin || mistralLogin || mistralImport || opencodeImport || zaiLogin
 	cloudConfigMissing := isCloudDeploy && !configFileExists
 	homeMode := configLoadedFromHome || (cfg != nil && cfg.Home.Enabled)
 	exampleAPIKeySafeMode := shouldEnableExampleAPIKeySafeMode(cfg, commandMode, tuiMode, standalone, cloudConfigMissing, homeMode)
@@ -767,6 +775,12 @@ func main() {
 			APIKey:      mistralAPIKey,
 			VibeEnvPath: mistralVibeEnv,
 			Label:       mistralLabel,
+		})
+	} else if opencodeImport {
+		cmd.DoOpenCodeImport(cfg, &cmd.OpenCodeImportOptions{
+			APIKey:       opencodeAPIKey,
+			AuthFilePath: opencodeAuthFile,
+			Label:        opencodeLabel,
 		})
 	} else if zaiLogin {
 		cmd.DoZAILogin(cfg, options)
@@ -994,7 +1008,7 @@ func argvFlagConsumesValue(name string) bool {
 	switch name {
 	case "codex-login", "codex-device-login", "claude-login", "no-browser",
 		"antigravity-login", "kimi-login", "kimi-ai-login", "cursor-login", "xai-login", "devin-login", "meta-login",
-		"mistral-login", "mistral-import", "zai-login",
+		"mistral-login", "mistral-import", "opencode-import", "zai-login",
 		"discover", "discover-json", "home-disable-cluster-discovery",
 		"tui", "standalone", "local-model":
 		return false

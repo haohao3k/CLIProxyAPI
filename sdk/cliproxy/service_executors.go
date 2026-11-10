@@ -224,6 +224,8 @@ func baselineExecutorAuths() []*coreauth.Auth {
 		"devin",
 		"meta",
 		"zai",
+		"opencode",
+		"opencode-go",
 		"openai-compatibility",
 	}
 	auths := make([]*coreauth.Auth, 0, len(providers))
@@ -334,6 +336,10 @@ func (s *Service) registerExecutorForAuth(a *coreauth.Auth, forceReplace bool) {
 	case "zai":
 		// Z.ai GLM Coding Plan speaks OpenAI chat completions upstream.
 		s.registerOpenAICompatProviderExecutor("zai", a, cfg, forceReplace, false)
+	case "opencode", "opencode-go", "ocg", "opencode_go":
+		// OpenCode Go speaks OpenAI chat completions and Responses API upstream.
+		s.registerOpenAICompatProviderExecutor("opencode", a, cfg, forceReplace, false)
+		s.registerOpenAICompatProviderExecutor("opencode-go", a, cfg, forceReplace, false)
 	default:
 		providerKey := strings.ToLower(strings.TrimSpace(a.Provider))
 		if providerKey == "" {

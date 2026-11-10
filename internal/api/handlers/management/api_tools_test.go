@@ -1490,3 +1490,65 @@ func TestAPICallRejectsWhenOnlyIDTokenPresentWithoutRefreshToken(t *testing.T) {
 		t.Fatal("upstream must not be hit when access token cannot be resolved")
 	}
 }
+
+func TestTokenValueForAuth_SupportsAPIKeyProviders(t *testing.T) {
+	cases := []struct {
+		name string
+		auth *coreauth.Auth
+		want string
+	}{
+		{
+			name: "opencode metadata api_key",
+			auth: &coreauth.Auth{
+				ID:       "oc-1",
+				Provider: "opencode",
+				Metadata: map[string]any{"type": "opencode", "api_key": "oc-secret-1"},
+			},
+			want: "oc-secret-1",
+		},
+		{
+			name: "mistral metadata api_key",
+			auth: &coreauth.Auth{
+				ID:       "mistral-1",
+				Provider: "mistral",
+				Metadata: map[string]any{"type": "mistral", "api_key": "mistral-secret-1"},
+			},
+			want: "mistral-secret-1",
+		},
+		{
+			name: "zai metadata apiKey",
+			auth: &coreauth.Auth{
+				ID:       "zai-1",
+				Provider: "zai",
+				Metadata: map[string]any{"type": "zai", "apiKey": "zai-secret-1"},
+			},
+			want: "zai-secret-1",
+		},
+		{
+			name: "cursor metadata access_token",
+			auth: &coreauth.Auth{
+				ID:       "cursor-1",
+				Provider: "cursor",
+				Metadata: map[string]any{"type": "cursor", "access_token": "cursor-secret-1"},
+			},
+			want: "cursor-secret-1",
+		},
+		{
+			name: "attributes api-key fallback",
+			auth: &coreauth.Auth{
+				ID:         "attr-1",
+				Provider:   "opencode",
+				Attributes: map[string]string{"api-key": "attr-secret-1"},
+			},
+			want: "attr-secret-1",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tokenValueForAuth(tc.auth); got != tc.want {
+				t.Fatalf("tokenValueForAuth() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

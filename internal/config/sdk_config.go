@@ -109,6 +109,36 @@ type SDKConfig struct {
 	// NonStreamKeepAliveInterval controls how often blank lines are emitted for non-streaming responses.
 	// <= 0 disables keep-alives. Value is in seconds.
 	NonStreamKeepAliveInterval int `yaml:"nonstream-keepalive-interval,omitempty" json:"nonstream-keepalive-interval,omitempty"`
+
+	// Combos defines 9router-style ordered model fallback chains (or round-robin pools).
+	Combos []ComboConfig `yaml:"combos,omitempty" json:"combos,omitempty"`
+}
+
+const (
+	// ComboStrategyFallback tries models in exact top-to-bottom order (0, 1, 2, ...),
+	// preserving prompt cache affinity on the primary model when healthy.
+	ComboStrategyFallback = "fallback"
+
+	// ComboStrategyRoundRobin rotates starting candidate across models in the combo.
+	ComboStrategyRoundRobin = "round-robin"
+)
+
+// ComboConfig defines an ordered model fallback chain (or round-robin pool) exposed as a virtual model.
+type ComboConfig struct {
+	Name     string   `yaml:"name" json:"name"`
+	Strategy string   `yaml:"strategy,omitempty" json:"strategy,omitempty"` // "fallback" (default, ordered top-to-bottom, cache-friendly) or "round-robin"
+	Models   []string `yaml:"models" json:"models"`                         // ordered target models, e.g. ["gpt-5.3-codex(medium)", "claude-sonnet-4-5", "glm-5.3", "devstral-medium-latest"]
+	Disabled bool     `yaml:"disabled,omitempty" json:"disabled,omitempty"`
+}
+
+// EffectiveStrategy returns the normalized combo routing strategy ("fallback" or "round-robin").
+func (c ComboConfig) EffectiveStrategy() string {
+	switch strings.ToLower(strings.TrimSpace(c.Strategy)) {
+	case ComboStrategyRoundRobin, "round_robin", "roundrobin", "rr":
+		return ComboStrategyRoundRobin
+	default:
+		return ComboStrategyFallback
+	}
 }
 
 // TLSHandshakeTimeout returns the configured upstream TLS handshake bound

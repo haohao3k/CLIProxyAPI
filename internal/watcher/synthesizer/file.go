@@ -14,6 +14,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/codex"
 	kimiauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/kimi"
+	opencodeauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/opencode"
 	zaiauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/zai"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
@@ -310,6 +311,11 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 	// OpenAI-compatible executor.
 	if provider == zaiauth.ProviderKey {
 		zaiauth.ApplyAuthFileAttributes(a, metadata)
+	}
+	// For OpenCode Go auth files ("opencode", "opencode-go", "ocg"), normalize
+	// provider to "opencode" and expose base_url and api_key to the executor.
+	if opencodeauth.IsOpencodeProvider(provider) {
+		opencodeauth.ApplyAuthFileAttributes(a, metadata)
 	}
 	// For codex auth files, extract plan_type from metadata or JWT id_token.
 	if provider == "codex" {

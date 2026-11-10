@@ -7,10 +7,76 @@ import (
 	"strings"
 
 	"github.com/MoeForge/moego/ojson"
+	opencodeauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/opencode"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 )
+
+// OpenAICompatHasExplicitWireAPI reports whether compat or attrWireAPI explicitly specifies
+// a wire API ("chat" or "responses"), allowing callers to apply provider-specific defaults
+// only when no explicit wire-api configuration is present.
+func OpenAICompatHasExplicitWireAPI(compat *config.OpenAICompatibility, attrWireAPI, upstreamModel, requestedModel string) bool {
+	if compat != nil {
+		for _, model := range []string{upstreamModel, requestedModel} {
+			if _, matched := openAICompatibilityModelWireAPI(compat.Models, model); matched {
+				return true
+			}
+		}
+		if strings.TrimSpace(compat.WireAPI) != "" {
+			if _, ok := config.NormalizeOpenAICompatWireAPI(compat.WireAPI); ok {
+				return true
+			}
+		}
+	}
+	if strings.TrimSpace(attrWireAPI) != "" {
+		if _, ok := config.NormalizeOpenAICompatWireAPI(attrWireAPI); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// IsOpencodeUpstream reports whether an OpenAI-compatible request targets the
+// OpenCode Go gateway: either the built-in "opencode" / "opencode-go" / "ocg"
+// provider, a compat entry named "opencode" / "opencode-go" / "ocg", or a base
+// URL pointing at opencode.ai/zen/go.
+func IsOpencodeUpstream(provider string, auth *cliproxyauth.Auth, compat *config.OpenAICompatibility, baseURL string) bool {
+	candidates := []string{provider}
+	if trimmed := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(provider)), "openai-compatible-"); trimmed != "" {
+		candidates = append(candidates, trimmed)
+	}
+	if auth != nil {
+		candidates = append(candidates, auth.Provider)
+		if auth.Attributes != nil {
+			candidates = append(candidates, auth.Attributes["compat_name"], auth.Attributes["provider_key"])
+		}
+	}
+	if compat != nil {
+		candidates = append(candidates, compat.Name)
+	}
+	for _, candidate := range candidates {
+		if opencodeauth.IsOpencodeProvider(candidate) {
+			return true
+		}
+	}
+	lowerURL := strings.ToLower(strings.TrimSpace(baseURL))
+	return strings.Contains(lowerURL, "opencode.ai/zen/go")
+}
+
+// ShouldUseOpencodeResponsesWire reports whether an OpenCode Go request should use
+// the Responses API (/zen/go/v1/responses) instead of /chat/completions.
+func ShouldUseOpencodeResponsesWire(from sdktranslator.Format, upstreamModel, requestedModel string) bool {
+	if registry.IsOpencodeResponsesOnlyModel(upstreamModel) || registry.IsOpencodeResponsesOnlyModel(requestedModel) {
+		return true
+	}
+	if from == sdktranslator.FormatOpenAIResponse {
+		return registry.OpencodeSupportsResponses(upstreamModel) || registry.OpencodeSupportsResponses(requestedModel)
+	}
+	return false
+}
 
 // OpenAICompatUsesResponsesWire reports whether an OpenAI-compatible request must be
 // sent to the upstream Responses API ({base-url}/responses) instead of Chat Completions.

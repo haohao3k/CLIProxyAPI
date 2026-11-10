@@ -42,6 +42,12 @@ type VertexCompatModel = internalconfig.VertexCompatModel
 type OpenAICompatibility = internalconfig.OpenAICompatibility
 type OpenAICompatibilityAPIKey = internalconfig.OpenAICompatibilityAPIKey
 type OpenAICompatibilityModel = internalconfig.OpenAICompatibilityModel
+type ComboConfig = internalconfig.ComboConfig
+
+const (
+	ComboStrategyFallback   = internalconfig.ComboStrategyFallback
+	ComboStrategyRoundRobin = internalconfig.ComboStrategyRoundRobin
+)
 
 type TLS = internalconfig.TLSConfig
 

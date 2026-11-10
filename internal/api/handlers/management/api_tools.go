@@ -260,11 +260,10 @@ func tokenValueForAuth(auth *coreauth.Auth) string {
 		return v
 	}
 	if auth.Attributes != nil {
-		if v := strings.TrimSpace(auth.Attributes["api_key"]); v != "" {
-			return v
-		}
-		if v := strings.TrimSpace(auth.Attributes["session_token"]); v != "" {
-			return v
+		for _, key := range []string{"api_key", "api-key", "access_token", "token", "session_token"} {
+			if v := strings.TrimSpace(auth.Attributes[key]); v != "" {
+				return v
+			}
 		}
 	}
 	return ""
@@ -804,8 +803,10 @@ func tokenValueFromMetadata(metadata map[string]any) string {
 	if v, ok := metadata["id_token"].(string); ok && strings.TrimSpace(v) != "" {
 		return strings.TrimSpace(v)
 	}
-	if v, ok := metadata["api_key"].(string); ok && strings.TrimSpace(v) != "" {
-		return strings.TrimSpace(v)
+	for _, key := range []string{"api_key", "api-key", "apiKey", "apikey", "key"} {
+		if v, ok := metadata[key].(string); ok && strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
 	}
 	if v, ok := metadata["session_token"].(string); ok && strings.TrimSpace(v) != "" {
 		return strings.TrimSpace(v)

@@ -2312,3 +2312,227 @@ func sanitizedOAuthRequestScopedErrors(entries map[string][]config.RequestScoped
 	}
 	return cfg.OAuthRequestScopedErrors
 }
+
+// GetCombos returns configured model fallback combos (`GET /v0/management/combos`).
+func (h *Handler) GetCombos(c *gin.Context) {
+	if h == nil || h.cfg == nil {
+		c.JSON(200, gin.H{"combos": []config.ComboConfig{}})
+		return
+	}
+	name := strings.TrimSpace(c.Query("name"))
+	if name != "" {
+		for _, combo := range h.cfg.Combos {
+			if strings.EqualFold(combo.Name, name) {
+				c.JSON(200, combo)
+				return
+			}
+		}
+		c.JSON(404, gin.H{"error": "combo not found"})
+		return
+	}
+	combos := h.cfg.Combos
+	if combos == nil {
+		combos = []config.ComboConfig{}
+	}
+	c.JSON(200, gin.H{"combos": combos})
+}
+
+// PutCombos replaces the full list of model combos (`PUT /v0/management/combos`).
+func (h *Handler) PutCombos(c *gin.Context) {
+	data, err := c.GetRawData()
+	if err != nil {
+		c.JSON(400, gin.H{"error": "failed to read body"})
+		return
+	}
+	var arr []config.ComboConfig
+	if err = json.Unmarshal(data, &arr); err != nil {
+		var obj struct {
+			Combos []config.ComboConfig `json:"combos"`
+			Items  []config.ComboConfig `json:"items"`
+		}
+		if err2 := json.Unmarshal(data, &obj); err2 != nil {
+			c.JSON(400, gin.H{"error": "invalid body"})
+			return
+		}
+		if obj.Combos != nil {
+			arr = obj.Combos
+		} else {
+			arr = obj.Items
+		}
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.cfg.Combos = arr
+	h.cfg.SanitizeCombos()
+	h.persistLocked(c)
+}
+
+// PostCombo creates or updates a single model combo (`POST /v0/management/combos`).
+func (h *Handler) PostCombo(c *gin.Context) {
+	var body config.ComboConfig
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(400, gin.H{"error": "invalid body"})
+		return
+	}
+	body.Name = strings.TrimSpace(body.Name)
+	if body.Name == "" || len(body.Models) == 0 {
+		c.JSON(400, gin.H{"error": "name and models are required"})
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	replaced := false
+	for i := range h.cfg.Combos {
+		if strings.EqualFold(h.cfg.Combos[i].Name, body.Name) {
+			h.cfg.Combos[i] = body
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		h.cfg.Combos = append(h.cfg.Combos, body)
+	}
+	h.cfg.SanitizeCombos()
+	h.persistLocked(c)
+}
+
+// PatchCombo updates an existing model combo by index or name (`PATCH /v0/management/combos`).
+func (h *Handler) PatchCombo(c *gin.Context) {
+	var body struct {
+		Index    *int                `json:"index"`
+		Match    *string             `json:"match"`
+		Name     *string             `json:"name"`
+		Strategy *string             `json:"strategy"`
+		Models   *[]string           `json:"models"`
+		Disabled *bool               `json:"disabled"`
+		Value    *config.ComboConfig `json:"value"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(400, gin.H{"error": "invalid body"})
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	targetIdx := -1
+	if body.Index != nil && *body.Index >= 0 && *body.Index < len(h.cfg.Combos) {
+		targetIdx = *body.Index
+	} else {
+		matchName := ""
+		if body.Match != nil {
+			matchName = strings.TrimSpace(*body.Match)
+		} else if body.Name != nil {
+			matchName = strings.TrimSpace(*body.Name)
+		} else if body.Value != nil {
+			matchName = strings.TrimSpace(body.Value.Name)
+		}
+		if matchName != "" {
+			for i := range h.cfg.Combos {
+				if strings.EqualFold(h.cfg.Combos[i].Name, matchName) {
+					targetIdx = i
+					break
+				}
+			}
+		}
+	}
+	if targetIdx == -1 {
+		if body.Value != nil && strings.TrimSpace(body.Value.Name) != "" {
+			h.cfg.Combos = append(h.cfg.Combos, *body.Value)
+			h.cfg.SanitizeCombos()
+			h.persistLocked(c)
+			return
+		}
+		if body.Name != nil && body.Models != nil && strings.TrimSpace(*body.Name) != "" {
+			entry := config.ComboConfig{
+				Name:   strings.TrimSpace(*body.Name),
+				Models: *body.Models,
+			}
+			if body.Strategy != nil {
+				entry.Strategy = *body.Strategy
+			}
+			if body.Disabled != nil {
+				entry.Disabled = *body.Disabled
+			}
+			h.cfg.Combos = append(h.cfg.Combos, entry)
+			h.cfg.SanitizeCombos()
+			h.persistLocked(c)
+			return
+		}
+		c.JSON(404, gin.H{"error": "combo not found"})
+		return
+	}
+	if body.Value != nil {
+		if strings.TrimSpace(body.Value.Name) != "" {
+			h.cfg.Combos[targetIdx].Name = strings.TrimSpace(body.Value.Name)
+		}
+		if strings.TrimSpace(body.Value.Strategy) != "" {
+			h.cfg.Combos[targetIdx].Strategy = strings.TrimSpace(body.Value.Strategy)
+		}
+		if len(body.Value.Models) > 0 {
+			h.cfg.Combos[targetIdx].Models = body.Value.Models
+		}
+		h.cfg.Combos[targetIdx].Disabled = body.Value.Disabled
+	} else {
+		if body.Name != nil && strings.TrimSpace(*body.Name) != "" {
+			h.cfg.Combos[targetIdx].Name = strings.TrimSpace(*body.Name)
+		}
+		if body.Strategy != nil {
+			h.cfg.Combos[targetIdx].Strategy = strings.TrimSpace(*body.Strategy)
+		}
+		if body.Models != nil {
+			h.cfg.Combos[targetIdx].Models = *body.Models
+		}
+		if body.Disabled != nil {
+			h.cfg.Combos[targetIdx].Disabled = *body.Disabled
+		}
+	}
+	h.cfg.SanitizeCombos()
+	h.persistLocked(c)
+}
+
+// DeleteCombo deletes a model combo by name or index (`DELETE /v0/management/combos`).
+func (h *Handler) DeleteCombo(c *gin.Context) {
+	name := strings.TrimSpace(c.Query("name"))
+	indexStr := strings.TrimSpace(c.Query("index"))
+	if name == "" && indexStr == "" {
+		var body struct {
+			Name  string `json:"name"`
+			Index *int   `json:"index"`
+		}
+		_ = c.ShouldBindJSON(&body)
+		name = strings.TrimSpace(body.Name)
+		if body.Index != nil {
+			indexStr = fmt.Sprintf("%d", *body.Index)
+		}
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if indexStr != "" {
+		var idx int
+		if _, err := fmt.Sscanf(indexStr, "%d", &idx); err == nil && idx >= 0 && idx < len(h.cfg.Combos) {
+			h.cfg.Combos = append(h.cfg.Combos[:idx], h.cfg.Combos[idx+1:]...)
+			h.cfg.SanitizeCombos()
+			h.persistLocked(c)
+			return
+		}
+	}
+	if name == "" {
+		c.JSON(400, gin.H{"error": "missing name or index"})
+		return
+	}
+	out := make([]config.ComboConfig, 0, len(h.cfg.Combos))
+	removed := false
+	for _, entry := range h.cfg.Combos {
+		if strings.EqualFold(entry.Name, name) {
+			removed = true
+			continue
+		}
+		out = append(out, entry)
+	}
+	if !removed {
+		c.JSON(404, gin.H{"error": "combo not found"})
+		return
+	}
+	h.cfg.Combos = out
+	h.cfg.SanitizeCombos()
+	h.persistLocked(c)
+}

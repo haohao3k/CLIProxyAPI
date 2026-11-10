@@ -29,6 +29,7 @@ type modelExecutionOptions struct {
 	Path                    string
 	CallerScope             string
 	AllowSpeechModel        bool
+	VisitedCombos           map[string]bool
 }
 
 // ProtocolExecutionRequest describes a route-level model execution request with explicit protocols.

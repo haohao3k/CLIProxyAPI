@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/opencode"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/zai"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
@@ -366,6 +367,9 @@ func (s *FileTokenStore) readAuthFiles(path, baseDir string) ([]*cliproxyauth.Au
 	}
 	if strings.EqualFold(provider, zai.ProviderKey) {
 		zai.ApplyAuthFileAttributes(auth, metadata)
+	}
+	if opencode.IsOpencodeProvider(provider) {
+		opencode.ApplyAuthFileAttributes(auth, metadata)
 	}
 	cliproxyauth.ApplyCustomHeadersFromMetadata(auth)
 	return []*cliproxyauth.Auth{auth}, nil

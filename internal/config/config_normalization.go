@@ -627,3 +627,69 @@ func NormalizeOAuthExcludedModels(entries map[string][]string) map[string][]stri
 	}
 	return out
 }
+
+// SanitizeCombos normalizes and deduplicates configured model combos.
+func (cfg *Config) SanitizeCombos() {
+	if cfg == nil {
+		return
+	}
+	cfg.SDKConfig.SanitizeCombos()
+}
+
+// SanitizeCombos normalizes and deduplicates configured model combos on SDKConfig.
+func (c *SDKConfig) SanitizeCombos() {
+	if c == nil || len(c.Combos) == 0 {
+		if c != nil {
+			c.Combos = nil
+		}
+		return
+	}
+	cleaned := make([]ComboConfig, 0, len(c.Combos))
+	seenNames := make(map[string]int, len(c.Combos))
+	for i := range c.Combos {
+		entry := c.Combos[i]
+		name := strings.TrimSpace(entry.Name)
+		if name == "" {
+			continue
+		}
+		models := make([]string, 0, len(entry.Models))
+		seenModels := make(map[string]struct{}, len(entry.Models))
+		for _, rawModel := range entry.Models {
+			m := strings.TrimSpace(rawModel)
+			if m == "" {
+				continue
+			}
+			// Drop direct self-reference to the combo's own name.
+			if strings.EqualFold(m, name) {
+				continue
+			}
+			key := strings.ToLower(m)
+			if _, exists := seenModels[key]; exists {
+				continue
+			}
+			seenModels[key] = struct{}{}
+			models = append(models, m)
+		}
+		if len(models) == 0 {
+			continue
+		}
+		normalized := ComboConfig{
+			Name:     name,
+			Strategy: entry.EffectiveStrategy(),
+			Models:   models,
+			Disabled: entry.Disabled,
+		}
+		nameKey := strings.ToLower(name)
+		if idx, exists := seenNames[nameKey]; exists {
+			cleaned[idx] = normalized
+			continue
+		}
+		seenNames[nameKey] = len(cleaned)
+		cleaned = append(cleaned, normalized)
+	}
+	if len(cleaned) == 0 {
+		c.Combos = nil
+		return
+	}
+	c.Combos = cleaned
+}
