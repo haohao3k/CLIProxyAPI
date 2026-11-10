@@ -185,6 +185,7 @@ func (e *OpenAICompatExecutor) executeWithCredentials(ctx context.Context, auth 
 		if err = e.applyPromptCacheKeyWithCompatDoc(ctx, auth, compat, from, baseModel, req, opts, doc); err != nil {
 			return resp, err
 		}
+		helps.SanitizeMistralChatRequestDoc(doc, baseURL)
 	}
 	if opts.Alt == "responses/compact" {
 		_ = doc.Delete("stream")
@@ -461,6 +462,7 @@ func (e *OpenAICompatExecutor) executeStreamWithCredentials(ctx context.Context,
 		// are captured even when the upstream is an OpenAI-compatible provider.
 		// The Responses API always reports usage on its terminal event.
 		helps.SetBoolIfDifferentDoc(doc, "stream_options.include_usage", true)
+		helps.SanitizeMistralChatRequestDoc(doc, baseURL)
 	}
 
 	url := strings.TrimSuffix(baseURL, "/") + endpoint

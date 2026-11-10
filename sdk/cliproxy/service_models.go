@@ -10,8 +10,10 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/modelconfig"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
+	log "github.com/sirupsen/logrus"
 )
 
 // registerModelsForAuth (re)binds provider models in the global registry using the core auth ID as client identifier.
@@ -315,9 +317,20 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 			}
 			if isCompatAuth {
 				models = s.appendPluginModels(providerKey, nil, nil)
+				if len(models) == 0 && strings.EqualFold(compatName, util.MistralProvider) {
+					// Mistral auth files carry the API key directly, so they stay
+					// usable without an openai-compatibility entry in config.yaml.
+					// Declaring one named "mistral" overrides this default list.
+					models = defaultMistralCompatModels()
+				}
 				if len(models) > 0 {
 					published = s.registerResolvedModelsForAuthFenced(a, fence, providerKey, applyModelPrefixes(models, a.Prefix, cfg.ForceModelPrefix))
 				} else {
+					if isMistralAuthFile(a) {
+						// Say why the credential serves nothing instead of dropping it
+						// silently: only compat_name "mistral" reads the catalog.
+						log.Warnf("mistral auth %s serves no models: no catalog models for compat_name %q and no same-named openai-compatibility entry in config.yaml", a.ID, compatName)
+					}
 					// No matching provider found or models removed entirely; drop any prior registration.
 					published = s.unregisterModelsForAuthFenced(a, fence)
 				}
@@ -1161,6 +1174,49 @@ func buildCodexConfigModels(entry *config.CodexKey) []*ModelInfo {
 			model.DisplayName = displayName
 		}
 		model.SupportConfigurationUpdate = configuredConfigurationUpdates[key]
+	}
+	return models
+}
+
+// isMistralAuthFile reports whether a was loaded from a "mistral" auth file
+// (API key import or Mistral Vibe browser sign-in).
+func isMistralAuthFile(a *coreauth.Auth) bool {
+	if a == nil || a.Metadata == nil {
+		return false
+	}
+	authType, _ := a.Metadata["type"].(string)
+	return strings.EqualFold(strings.TrimSpace(authType), util.MistralProvider)
+}
+
+// defaultMistralCompatModels returns the models served for a Mistral auth file
+// that has no matching openai-compatibility entry in config.yaml. Catalog
+// entries are registered as-is, like other catalog-backed providers, so any
+// metadata they carry (description, context length, completion limit) is kept.
+// Thinking support is only advertised for Mistral reasoning models; for the
+// others the thinking pipeline strips reasoning fields Mistral would reject.
+// The catalog IDs are the upstream Mistral names, so no alias resolution is
+// required.
+func defaultMistralCompatModels() []*ModelInfo {
+	catalog := registry.GetMistralModels()
+	models := make([]*ModelInfo, 0, len(catalog))
+	for _, model := range catalog {
+		if model == nil || strings.TrimSpace(model.ID) == "" {
+			continue
+		}
+		if model.MetadataModelID == "" {
+			model.MetadataModelID = model.ID
+		}
+		if strings.TrimSpace(model.Type) == "" {
+			model.Type = "openai-compatibility"
+		}
+		if strings.TrimSpace(model.OwnedBy) == "" {
+			model.OwnedBy = util.MistralProvider
+		}
+		model.Thinking = modelconfig.NormalizeThinkingSupport(model.Thinking)
+		models = append(models, model)
+	}
+	if len(models) == 0 {
+		return nil
 	}
 	return models
 }

@@ -1015,6 +1015,26 @@ upstream:
 #       models:
 #         - name: "gpt-5.1"
 #           alias: "gpt-5.1"
+#
+#   # Mistral (https://api.mistral.ai/v1) is served through the OpenAI-compatibility
+#   # executor. Instead of declaring it here you can save a "mistral" credential file:
+#   #   cli-proxy-api -mistral-login   # Mistral Vibe browser sign-in (mints an API key)
+#   #   cli-proxy-api -mistral-import  # import MISTRAL_API_KEY / ~/.vibe/.env / -mistral-api-key
+#   # (or GET /v0/management/mistral-auth-url, /v8/management/oauth/auth-url?provider=mistral).
+#   # Such a credential serves the built-in Mistral model list (mistral-large-4,
+#   # mistral-medium-latest, codestral-latest, devstral-small-latest, ...). Declaring an
+#   # openai-compatibility entry named "mistral" replaces that list for those credentials:
+#   # openai-compatibility:
+#   #   - name: "mistral"
+#   #     base-url: "https://api.mistral.ai/v1"
+#   #     keys:
+#   #       - api-key: "YOUR_MISTRAL_API_KEY"
+#   #     models:
+#   #       - name: "mistral-medium-latest"
+#   #         thinking:
+#   #           levels: ["none", "low", "medium", "high"]
+#   #       - name: "devstral-small-latest"
+#   #         alias: "devstral-small"
 
 # END API KEY EXAMPLES
 

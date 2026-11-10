@@ -118,6 +118,11 @@ func main() {
 	var xaiLogin bool
 	var devinLogin bool
 	var metaLogin bool
+	var mistralLogin bool
+	var mistralImport bool
+	var mistralAPIKey string
+	var mistralVibeEnv string
+	var mistralLabel string
 	var discoverGateways bool
 	var discoverTimeout int
 	var discoverJSON bool
@@ -150,6 +155,11 @@ func main() {
 	flag.BoolVar(&xaiLogin, "xai-login", false, "Login to xAI using OAuth")
 	flag.BoolVar(&devinLogin, "devin-login", false, "Login to Devin using OAuth")
 	flag.BoolVar(&metaLogin, "meta-login", false, "Login to Meta using OAuth")
+	flag.BoolVar(&mistralLogin, "mistral-login", false, "Login to Mistral using the Mistral Vibe browser sign-in")
+	flag.BoolVar(&mistralImport, "mistral-import", false, "Import Mistral API key from Mistral Vibe (~/.vibe/.env)")
+	flag.StringVar(&mistralAPIKey, "mistral-api-key", "", "Mistral API key override (use with -mistral-import)")
+	flag.StringVar(&mistralVibeEnv, "mistral-vibe-env", "", "Path to the Mistral Vibe .env file (use with -mistral-import)")
+	flag.StringVar(&mistralLabel, "mistral-label", "", "Custom label for the saved auth file (use with -mistral-import)")
 	flag.BoolVar(&discoverGateways, "discover", false, "Discover local AI gateways and CPA instances on the LAN")
 	flag.IntVar(&discoverTimeout, "discover-timeout", 3, "Timeout in seconds for LAN discovery (default 3s)")
 	flag.BoolVar(&discoverJSON, "discover-json", false, "Output discovered gateways in JSON format")
@@ -663,7 +673,7 @@ func main() {
 		ProxyURL:     loginProxyURL,
 	}
 
-	commandMode := vertexImport != "" || siwcBind != "" || antigravityLogin || codexLogin || codexDeviceLogin || claudeLogin || kimiLogin || kimiAILogin || cursorLogin || xaiLogin || devinLogin || metaLogin
+	commandMode := vertexImport != "" || siwcBind != "" || antigravityLogin || codexLogin || codexDeviceLogin || claudeLogin || kimiLogin || kimiAILogin || cursorLogin || xaiLogin || devinLogin || metaLogin || mistralLogin || mistralImport
 	cloudConfigMissing := isCloudDeploy && !configFileExists
 	homeMode := configLoadedFromHome || (cfg != nil && cfg.Home.Enabled)
 	exampleAPIKeySafeMode := shouldEnableExampleAPIKeySafeMode(cfg, commandMode, tuiMode, standalone, cloudConfigMissing, homeMode)
@@ -748,6 +758,14 @@ func main() {
 		cmd.DoDevinLogin(cfg, options)
 	} else if metaLogin {
 		cmd.DoMetaLogin(cfg, options)
+	} else if mistralLogin {
+		cmd.DoMistralLogin(cfg, options)
+	} else if mistralImport {
+		cmd.DoMistralImport(cfg, &cmd.MistralImportOptions{
+			APIKey:      mistralAPIKey,
+			VibeEnvPath: mistralVibeEnv,
+			Label:       mistralLabel,
+		})
 	} else {
 		// In cloud deploy mode without config file, just wait for shutdown signals
 		if isCloudDeploy && !configFileExists {
@@ -972,6 +990,7 @@ func argvFlagConsumesValue(name string) bool {
 	switch name {
 	case "codex-login", "codex-device-login", "claude-login", "no-browser",
 		"antigravity-login", "kimi-login", "kimi-ai-login", "xai-login", "devin-login", "meta-login",
+		"mistral-login", "mistral-import",
 		"discover", "discover-json", "home-disable-cluster-discovery",
 		"tui", "standalone", "local-model":
 		return false

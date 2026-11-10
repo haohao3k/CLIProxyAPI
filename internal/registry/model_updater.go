@@ -106,6 +106,7 @@ func detectChangedProviders(oldData, newData *staticModelsJSON) []string {
 		{"xai", oldData.XAI, newData.XAI},
 		{"devin", oldData.Devin, newData.Devin},
 		{"meta", oldData.Meta, newData.Meta},
+		{"mistral", oldData.Mistral, newData.Mistral},
 	}
 
 	seen := make(map[string]bool, len(sections))
@@ -239,6 +240,13 @@ func validateModelsCatalog(data *staticModelsJSON) error {
 
 	for _, section := range requiredSections {
 		if err := validateModelSection(section.name, section.models); err != nil {
+			return err
+		}
+	}
+	// The mistral section is optional (GetMistralModels falls back to the
+	// built-in list), so only validate it when a catalog publishes one.
+	if len(data.Mistral) > 0 {
+		if err := validateModelSection("mistral", data.Mistral); err != nil {
 			return err
 		}
 	}
