@@ -163,6 +163,9 @@ func (e *OpenAICompatExecutor) executeWithCredentials(ctx context.Context, auth 
 	if err = helps.ApplyRequestThinkingDoc(doc, req, opts, from.String(), to.String(), e.Identifier(), updatesChanged); err != nil {
 		return resp, err
 	}
+	if helps.IsZAIUpstream(e.Identifier(), baseURL) {
+		helps.NormalizeZAIThinkingDoc(doc)
+	}
 
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
@@ -403,6 +406,9 @@ func (e *OpenAICompatExecutor) executeStreamWithCredentials(ctx context.Context,
 
 	if err = helps.ApplyRequestThinkingDoc(doc, req, opts, from.String(), to.String(), e.Identifier(), updatesChanged); err != nil {
 		return nil, err
+	}
+	if helps.IsZAIUpstream(e.Identifier(), baseURL) {
+		helps.NormalizeZAIThinkingDoc(doc)
 	}
 
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)

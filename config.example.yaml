@@ -999,6 +999,28 @@ upstream:
 #           alias: "claude-opus-4.66"
 #         - name: "kimi-k2.5"
 #           alias: "claude-opus-4.66"
+#
+#   # Z.ai GLM Coding Plan (https://api.z.ai/api/coding/paas/v4) is served through
+#   # the OpenAI-compatibility executor. You can either run OAuth login:
+#   #   cli-proxy-api -zai-login
+#   # (or GET /v0/management/zai-auth-url, /v8/management/oauth/auth-url?provider=zai),
+#   # drop an auth file {"type": "zai", "api_key": "YOUR_ZAI_CODING_KEY"} into auth-dir,
+#   # or configure it under openai-compatibility (or under claude-api-key with
+#   # base-url: "https://api.z.ai/api/anthropic"):
+#   # openai-compatibility:
+#   #   - name: "zai"
+#   #     base-url: "https://api.z.ai/api/coding/paas/v4"
+#   #     keys:
+#   #       - api-key: "YOUR_ZAI_CODING_KEY"
+#   #     models:
+#   #       - name: "glm-5.3"
+#   #       - name: "glm-5.3-flash"
+#   #       - name: "glm-5.2"
+#   #       - name: "glm-5.1"
+#   #       - name: "glm-5-turbo"
+#   #       - name: "glm-5"
+#   #       - name: "glm-4.7"
+#   #       - name: "glm-4.6v"
 
 # END API KEY EXAMPLES
 
