@@ -413,6 +413,8 @@ func (h *Handler) StartOAuthV8(c *gin.Context) {
 		h.RequestKimiToken(c)
 	case "kimi-ai":
 		h.RequestKimiAIToken(c)
+	case "cursor":
+		h.RequestCursorToken(c)
 	case "xai":
 		h.RequestXAIToken(c)
 	case "devin":

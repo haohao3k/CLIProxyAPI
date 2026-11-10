@@ -25,6 +25,7 @@ var oauthProviders = []oauthProvider{
 	{"Antigravity", "antigravity-auth-url", "🟪", false},
 	{"Kimi (kimi.com)", "kimi-auth-url", "🟫", true},
 	{"Kimi (kimi.ai)", "kimi-ai-auth-url", "🟫", true},
+	{"Cursor", "cursor-auth-url", "🟦", true},
 	{"xAI", "xai-auth-url", "⬛", true},
 	{"Meta", "meta-auth-url", "🔵", true},
 }

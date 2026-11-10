@@ -19,6 +19,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/antigravity"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/claude"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/codex"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/cursor"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/kimi"
 	metaauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/meta"
 	xaiauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/xai"
@@ -422,7 +423,7 @@ func (h *Handler) RequestCodexToken(c *gin.Context) {
 
 func isIdentitylessOAuthProvider(provider string) bool {
 	trimmed := strings.ToLower(strings.TrimSpace(provider))
-	return trimmed == "kimi" || trimmed == "kimi-ai"
+	return trimmed == "kimi" || trimmed == "kimi-ai" || trimmed == "cursor"
 }
 
 func matchesOAuthRecoveryTarget(target oauthRecoveryTarget, email, accountID, candidateFileName string) bool {
@@ -1277,6 +1278,79 @@ func (h *Handler) requestKimiTokenWithDomain(c *gin.Context, domain string) {
 	}()
 
 	c.JSON(200, response)
+}
+
+// RequestCursorToken starts the Cursor deep-link PKCE login. The returned URL
+// must be opened in a browser where the user approves the login; the proxy
+// polls Cursor in the background and saves the credential once approved.
+func (h *Handler) RequestCursorToken(c *gin.Context) {
+	ctx := context.Background()
+	ctx = PopulateAuthContext(ctx, c)
+
+	fmt.Println("Initializing Cursor authentication...")
+
+	sessionProxyURL := oauthSessionProxyURLFromContext(c)
+	cfg := h.oauthConfigWithProxy(sessionProxyURL)
+	state := fmt.Sprintf("cur-%d", time.Now().UnixNano())
+	cursorAuth := cursor.NewCursorAuth(cfg)
+
+	flow, errStart := cursorAuth.StartLoginFlow(ctx)
+	if errStart != nil {
+		log.Errorf("Failed to generate Cursor authorization URL: %s", redactSessionProxyInString(errStart.Error(), sessionProxyURL))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate authorization url"})
+		return
+	}
+
+	RegisterOAuthSessionWithProxy(state, "cursor", sessionProxyURL)
+	expiresIn := flow.ExpiresIn
+	if expiresIn <= 0 {
+		expiresIn = int(cursor.MaxPollDuration / time.Second)
+	}
+	response := gin.H{"status": "ok", "url": flow.LoginURL, "state": state, "flow": "device", "expires_in": expiresIn}
+	bindOAuthSessionTarget(c, state, response)
+
+	go func() {
+		pollCtx, cancelPoll := context.WithCancel(ctx)
+		defer cancelPoll()
+		go watchOAuthSessionCancel(pollCtx, cancelPoll, state, "cursor")
+
+		fmt.Println("Waiting for Cursor authentication...")
+		authBundle, errWait := cursorAuth.WaitForAuthorization(pollCtx, flow)
+		if errWait != nil {
+			if !IsOAuthSessionPending(state, "cursor") {
+				return
+			}
+			SetOAuthSessionError(state, redactSessionProxyInString(oauthSessionErrorWithCause("Authentication failed", errWait), sessionProxyURL))
+			fmt.Printf("Cursor authentication failed: %s\n", redactSessionProxyInString(errWait.Error(), sessionProxyURL))
+			return
+		}
+		if !IsOAuthSessionPending(state, "cursor") {
+			return
+		}
+		if authBundle == nil || authBundle.Login == nil {
+			SetOAuthSessionError(state, "Authentication failed: empty Cursor login result")
+			return
+		}
+
+		fileName := fmt.Sprintf("cursor-%d.json", time.Now().UnixMilli())
+		record := &coreauth.Auth{
+			ID:       fileName,
+			Provider: "cursor",
+			FileName: fileName,
+			Label:    authBundle.Label(),
+			Storage:  cursorAuth.CreateTokenStorage(authBundle),
+			Metadata: cursor.BuildMetadata(authBundle),
+		}
+		savedPath, okSaved := h.commitAndCompleteBuiltinOAuthSession(ctx, state, "cursor", sessionProxyURL, record, "Failed to save authentication tokens", false)
+		if !okSaved {
+			return
+		}
+
+		fmt.Printf("Authentication successful! Token saved to %s\n", savedPath)
+		fmt.Println("You can now use Cursor services through this CLI")
+	}()
+
+	c.JSON(http.StatusOK, response)
 }
 
 // watchOAuthSessionCancel cancels pollCtx once the OAuth session is no longer pending.

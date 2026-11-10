@@ -197,6 +197,14 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 			}
 		}
 		models = applyExcludedModels(models, excluded)
+	case "cursor":
+		models = registry.GetCursorModels()
+		if s.cursorLiveModelsEnabled(a) {
+			if live := s.fetchCursorModelsForAuth(ctx, a); len(live) > 0 {
+				models = mergeCursorModels(live, models)
+			}
+		}
+		models = applyExcludedModels(models, excluded)
 	case "devin":
 		models = registry.GetDevinModels()
 		models = applyExcludedModels(models, excluded)
