@@ -41,6 +41,8 @@ type staticModelsJSON struct {
 	XAI         []*ModelInfo `json:"xai"`
 	Devin       []*ModelInfo `json:"devin"`
 	Meta        []*ModelInfo `json:"meta"`
+	// Mistral is optional: when absent, GetMistralModels serves the built-in list.
+	Mistral []*ModelInfo `json:"mistral,omitempty"`
 }
 
 // GetClaudeModels returns the standard Claude model definitions.
@@ -566,6 +568,7 @@ func cloneModelInfos(models []*ModelInfo) []*ModelInfo {
 //   - xai
 //   - devin
 //   - meta
+//   - mistral
 func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 	key := strings.ToLower(strings.TrimSpace(channel))
 	switch key {
@@ -591,6 +594,8 @@ func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 		return GetDevinModels()
 	case "meta", "muse":
 		return GetMetaModels()
+	case "mistral":
+		return GetMistralModels()
 	default:
 		return nil
 	}
@@ -645,6 +650,7 @@ func LookupStaticModelInfo(modelID string) *ModelInfo {
 		data.XAI,
 		GetDevinModels(),
 		GetMetaModels(),
+		GetMistralModels(),
 	}
 	for _, models := range allModels {
 		for _, m := range models {

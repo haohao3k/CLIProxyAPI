@@ -15,6 +15,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/codex"
 	kimiauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/kimi"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	log "github.com/sirupsen/logrus"
@@ -316,8 +317,44 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 			}
 		}
 	}
+	// Mistral auth files hold a permanent API key written by -mistral-import,
+	// -mistral-login or the management OAuth flow (Mistral Vibe browser
+	// sign-in mints a long-lived API key). They carry no refreshable OAuth
+	// material, so route them through the existing OpenAI-compatibility
+	// executor: resolve the same internal provider key a config-declared entry
+	// gets, and populate the attributes the executor's credential resolver reads.
+	if provider == util.MistralProvider {
+		applyMistralCompatAttributes(a, metadata)
+	}
 	a.BindFileSnapshot(fullPath, data)
 	return []*coreauth.Auth{a}, nil
+}
+
+// applyMistralCompatAttributes maps a "mistral" auth file onto the attributes
+// the OpenAI-compatibility executor reads.
+func applyMistralCompatAttributes(a *coreauth.Auth, metadata map[string]any) {
+	apiKey, _ := metadata["api_key"].(string)
+	if strings.TrimSpace(apiKey) == "" {
+		// Browser sign-in records mirror the key into access_token as well.
+		apiKey, _ = metadata["access_token"].(string)
+	}
+	if trimmed := strings.TrimSpace(apiKey); trimmed != "" {
+		a.Attributes["api_key"] = trimmed
+	}
+	baseURL, _ := metadata["base_url"].(string)
+	if strings.TrimSpace(baseURL) == "" {
+		baseURL = util.MistralDefaultBaseURL
+	}
+	a.Attributes["base_url"] = strings.TrimSpace(baseURL)
+	compatName, _ := metadata["compat_name"].(string)
+	if strings.TrimSpace(compatName) == "" {
+		compatName = util.MistralProvider
+	}
+	compatName = strings.TrimSpace(compatName)
+	a.Attributes["compat_name"] = compatName
+	providerKey := util.OpenAICompatibleProviderKey(compatName)
+	a.Attributes["provider_key"] = providerKey
+	a.Provider = providerKey
 }
 
 func parsePluginFileAuths(parser PluginAuthParser, req pluginapi.AuthParseRequest) ([]*coreauth.Auth, bool, error) {

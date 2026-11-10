@@ -8,7 +8,7 @@ import (
 )
 
 func TestSanitizeMistralChatRequestDocUpstreamBoundary(t *testing.T) {
-	const input = `{"reasoning_effort":"high","stream_options":{"include_usage":true},"messages":[{"role":"assistant","content":"answer","reasoning_content":"plan"}]}`
+	const input = `{"reasoning_effort":"high","stream_options":{"include_usage":true},"client_metadata":{"session":"s"},"messages":[{"role":"assistant","content":"answer","reasoning_content":"plan"}]}`
 	for _, tc := range []struct {
 		baseURL string
 		mistral bool

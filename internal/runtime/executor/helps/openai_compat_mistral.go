@@ -25,6 +25,8 @@ func SanitizeMistralChatRequestDoc(doc *ojson.Doc, baseURL string) {
 	}
 
 	_ = doc.Delete("stream_options")
+	// Mistral rejects the client_metadata field some clients attach.
+	_ = doc.Delete("client_metadata")
 	messages := doc.Get("messages").Array()
 	// Delete backwards to keep the remaining message indices stable.
 	for i := len(messages) - 1; i >= 0; i-- {
