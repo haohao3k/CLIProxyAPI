@@ -83,6 +83,9 @@ func describeOpenAICompatibilityUpdate(oldEntry, newEntry config.OpenAICompatibi
 	if oldEntry.SupportPromptCacheKey != newEntry.SupportPromptCacheKey {
 		details = append(details, fmt.Sprintf("support-prompt-cache-key %t -> %t", oldEntry.SupportPromptCacheKey, newEntry.SupportPromptCacheKey))
 	}
+	if oldWire, newWire := strings.TrimSpace(oldEntry.WireAPI), strings.TrimSpace(newEntry.WireAPI); !strings.EqualFold(oldWire, newWire) {
+		details = append(details, fmt.Sprintf("wire-api %s -> %s", formatOpenAICompatWireAPI(oldWire), formatOpenAICompatWireAPI(newWire)))
+	}
 	if !optionalBoolEqual(oldEntry.DisableCooling, newEntry.DisableCooling) {
 		details = append(details, fmt.Sprintf("disable-cooling %s -> %s", formatOptionalBool(oldEntry.DisableCooling), formatOptionalBool(newEntry.DisableCooling)))
 	}
@@ -243,4 +246,11 @@ func openAICompatSignature(entry config.OpenAICompatibility) string {
 	}
 	sum := sha256.Sum256([]byte(strings.Join(parts, "|")))
 	return hex.EncodeToString(sum[:])
+}
+
+func formatOpenAICompatWireAPI(value string) string {
+	if value == "" {
+		return config.OpenAICompatWireAPIChat
+	}
+	return value
 }

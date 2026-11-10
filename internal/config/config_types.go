@@ -1073,6 +1073,11 @@ type OpenAICompatibility struct {
 	// BaseURL is the base URL for the external OpenAI-compatible API endpoint.
 	BaseURL string `yaml:"base-url" json:"base-url"`
 
+	// WireAPI selects the upstream wire protocol: "chat" (default) posts to
+	// {base-url}/chat/completions, "responses" posts to {base-url}/responses
+	// using the OpenAI Responses API format. Models may override it individually.
+	WireAPI string `yaml:"wire-api,omitempty" json:"wire-api,omitempty"`
+
 	// APIKeyEntries defines API keys with optional per-key proxy configuration.
 	APIKeyEntries []OpenAICompatibilityAPIKey `yaml:"api-key-entries,omitempty" json:"api-key-entries,omitempty"`
 
@@ -1154,6 +1159,10 @@ type OpenAICompatibilityModel struct {
 	// UseMaxCompletionTokens emits max_completion_tokens instead of legacy max_tokens for this model.
 	// Default false preserves max_tokens for older compatible upstreams.
 	UseMaxCompletionTokens bool `yaml:"use-max-completion-tokens,omitempty" json:"use-max-completion-tokens,omitempty"`
+
+	// WireAPI optionally overrides the provider-level wire-api for this model
+	// ("chat" or "responses"). Empty inherits the provider setting.
+	WireAPI string `yaml:"wire-api,omitempty" json:"wire-api,omitempty"`
 
 	// Thinking configures the thinking/reasoning capability for this model.
 	// If nil, the model defaults to level-based reasoning with levels ["low", "medium", "high"].
