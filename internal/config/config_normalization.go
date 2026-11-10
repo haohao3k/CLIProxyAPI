@@ -301,9 +301,33 @@ func (cfg *Config) SanitizeOpenAICompatibility() {
 			// Skip providers with no base-url; treated as removed
 			continue
 		}
+		e.WireAPI = sanitizeOpenAICompatWireAPI(e.WireAPI, e.Name, "")
+		if len(e.Models) > 0 {
+			models := make([]OpenAICompatibilityModel, len(e.Models))
+			copy(models, e.Models)
+			for j := range models {
+				models[j].WireAPI = sanitizeOpenAICompatWireAPI(models[j].WireAPI, e.Name, models[j].Name)
+			}
+			e.Models = models
+		}
 		out = append(out, e)
 	}
 	cfg.OpenAICompatibility = out
+}
+
+// sanitizeOpenAICompatWireAPI canonicalizes a wire-api value and falls back to the
+// default Chat Completions wire (with a warning) when the value is not recognized.
+func sanitizeOpenAICompatWireAPI(value, providerName, modelName string) string {
+	normalized, ok := NormalizeOpenAICompatWireAPI(value)
+	if !ok {
+		log.WithFields(log.Fields{
+			"provider": providerName,
+			"model":    modelName,
+			"wire-api": value,
+		}).Warn("openai-compatibility: unsupported wire-api value, falling back to chat")
+		return ""
+	}
+	return normalized
 }
 
 // SanitizeCodexKeys removes Codex API key entries missing a BaseURL.

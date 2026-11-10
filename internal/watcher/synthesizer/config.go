@@ -415,6 +415,9 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 				attrs["models_hash"] = hash
 			}
 			addConfigHeadersToAttrs(compat.Headers, attrs)
+			if compat.UsesResponsesWireAPI() {
+				attrs["wire_api"] = config.OpenAICompatWireAPIResponses
+			}
 			a := &coreauth.Auth{
 				ID:                  id,
 				Provider:            internalProviderKey,
@@ -463,6 +466,9 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 				attrs["models_hash"] = hash
 			}
 			addConfigHeadersToAttrs(compat.Headers, attrs)
+			if compat.UsesResponsesWireAPI() {
+				attrs["wire_api"] = config.OpenAICompatWireAPIResponses
+			}
 			a := &coreauth.Auth{
 				ID:                  id,
 				Provider:            internalProviderKey,

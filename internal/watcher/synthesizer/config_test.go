@@ -1495,3 +1495,48 @@ func TestConfigSynthesizer_EmptyConnectionPoolBlockOptsIn(t *testing.T) {
 		t.Fatalf("keyless OpenAI-compatible entry lost its group connection-pool block: %+v", keylessAuths)
 	}
 }
+
+func TestConfigSynthesizer_OpenAICompat_WireAPIAttribute(t *testing.T) {
+	synth := NewConfigSynthesizer()
+	ctx := &SynthesisContext{
+		Config: &config.Config{
+			OpenAICompatibility: []config.OpenAICompatibility{
+				{
+					Name:          "ResponsesProvider",
+					BaseURL:       "https://responses.api.com/v1",
+					WireAPI:       config.OpenAICompatWireAPIResponses,
+					APIKeyEntries: []config.OpenAICompatibilityAPIKey{{APIKey: "key-r"}},
+				},
+				{
+					Name:    "ResponsesNoKey",
+					BaseURL: "https://responses-nokey.api.com/v1",
+					WireAPI: config.OpenAICompatWireAPIResponses,
+				},
+				{
+					Name:          "ChatProvider",
+					BaseURL:       "https://chat.api.com/v1",
+					APIKeyEntries: []config.OpenAICompatibilityAPIKey{{APIKey: "key-c"}},
+				},
+			},
+		},
+		Now:         time.Now(),
+		IDGenerator: NewStableIDGenerator(),
+	}
+
+	auths, err := synth.Synthesize(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(auths) != 3 {
+		t.Fatalf("expected 3 auths, got %d", len(auths))
+	}
+	for _, auth := range auths {
+		want := ""
+		if auth.Label != "ChatProvider" {
+			want = config.OpenAICompatWireAPIResponses
+		}
+		if got := auth.Attributes["wire_api"]; got != want {
+			t.Fatalf("%s wire_api = %q, want %q", auth.Label, got, want)
+		}
+	}
+}

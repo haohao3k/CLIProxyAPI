@@ -915,6 +915,7 @@ func (h *Handler) PatchOpenAICompat(c *gin.Context) {
 		Models                *[]config.OpenAICompatibilityModel  `json:"models"`
 		Headers               *map[string]string                  `json:"headers"`
 		SupportPromptCacheKey *bool                               `json:"support-prompt-cache-key"`
+		WireAPI               *string                             `json:"wire-api"`
 		RequestRetry          *int                                `json:"request-retry"`
 		RequestScopedErrors   *[]config.RequestScopedErrorRule    `json:"request-scoped-errors"`
 	}
@@ -994,6 +995,14 @@ func (h *Handler) PatchOpenAICompat(c *gin.Context) {
 	}
 	if body.Value.SupportPromptCacheKey != nil {
 		entry.SupportPromptCacheKey = *body.Value.SupportPromptCacheKey
+	}
+	if body.Value.WireAPI != nil {
+		wireAPI, ok := config.NormalizeOpenAICompatWireAPI(*body.Value.WireAPI)
+		if !ok {
+			c.JSON(400, gin.H{"error": "invalid wire-api: must be \"chat\" or \"responses\""})
+			return
+		}
+		entry.WireAPI = wireAPI
 	}
 	if body.Value.RequestScopedErrors != nil {
 		entry.RequestScopedErrors = append([]config.RequestScopedErrorRule(nil), *body.Value.RequestScopedErrors...)

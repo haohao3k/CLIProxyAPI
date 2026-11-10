@@ -141,9 +141,15 @@ func (e *OpenAICompatExecutor) executeWithCredentials(ctx context.Context, auth 
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
 	to := sdktranslator.FromString("openai")
 	endpoint := "/chat/completions"
+	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
+	useResponsesWire := false
 	if opts.Alt == "responses/compact" {
 		to = sdktranslator.FromString("openai-response")
 		endpoint = "/responses/compact"
+	} else if e.usesResponsesWire(auth, compat, baseModel, requestedModel) {
+		useResponsesWire = true
+		to = helps.OpenAICompatResponsesTarget(from)
+		endpoint = "/responses"
 	}
 	originalPayloadSource := req.Payload
 	if len(opts.OriginalRequest) > 0 {
@@ -159,19 +165,23 @@ func (e *OpenAICompatExecutor) executeWithCredentials(ctx context.Context, auth 
 	originalTranslated = helps.SetStringIfDifferent(originalTranslated, "model", baseModel)
 	doc := ojson.NewDoc(translated)
 	helps.SetStringIfDifferentDoc(doc, "model", baseModel)
+	if useResponsesWire {
+		helps.PrepareOpenAICompatResponsesRequestDoc(doc, from, to, originalPayload, req.Model, false)
+	}
 
 	if err = helps.ApplyRequestThinkingDoc(doc, req, opts, from.String(), to.String(), e.Identifier(), updatesChanged); err != nil {
 		return resp, err
 	}
 
-	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
-	if helps.ShouldNormalizeOpenAIToolResultsForModel(compat, baseModel, requestedModel) {
+	if !useResponsesWire && helps.ShouldNormalizeOpenAIToolResultsForModel(compat, baseModel, requestedModel) {
 		helps.NormalizeOpenAIToolResultsTextOnlyDoc(doc)
 	}
 	if opts.Alt != "responses/compact" {
-		useMCT := helps.ShouldUseMaxCompletionTokensForModel(compat, baseModel, requestedModel)
-		helps.NormalizeOpenAIMaxTokensDoc(doc, useMCT)
+		if !useResponsesWire {
+			useMCT := helps.ShouldUseMaxCompletionTokensForModel(compat, baseModel, requestedModel)
+			helps.NormalizeOpenAIMaxTokensDoc(doc, useMCT)
+		}
 		if err = e.applyPromptCacheKeyWithCompatDoc(ctx, auth, compat, from, baseModel, req, opts, doc); err != nil {
 			return resp, err
 		}
@@ -181,7 +191,7 @@ func (e *OpenAICompatExecutor) executeWithCredentials(ctx context.Context, auth 
 		sanitizeOpenAIResponsesReasoningEncryptedContentWithCompatModelAndBaseURLDoc(ctx, "openai compat executor", doc, true, resolveResponsesSignatureTargetModel(baseModel, req, opts), baseURL)
 	}
 	url := strings.TrimSuffix(baseURL, "/") + endpoint
-	helps.ApplyPayloadConfigWithRequestDoc(e.cfg, baseModel, to.String(), from.String(), "", doc, originalTranslated, requestedModel, requestPath, opts.Headers)
+	helps.ApplyPayloadConfigWithRequestDoc(e.cfg, baseModel, openAICompatPayloadProtocol(to, useResponsesWire), from.String(), "", doc, originalTranslated, requestedModel, requestPath, opts.Headers)
 	translated = doc.Bytes()
 	reporter.SetTranslatedReasoningEffort(translated, to.String())
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(translated))
@@ -243,14 +253,31 @@ func (e *OpenAICompatExecutor) executeWithCredentials(ctx context.Context, auth 
 	}
 	helps.AppendAPIResponseChunk(ctx, e.cfg, body)
 	reporter.ObserveResponseModel(body)
+	usageDetail := helps.ParseOpenAIUsage(body)
+	translationBody := body
+	if useResponsesWire {
+		terminalEvent, responseObject, errResponses := helps.OpenAICompatResponsesNonStreamPayload(body)
+		if errResponses != nil {
+			err = statusErr{code: http.StatusBadGateway, msg: errResponses.Error()}
+			return resp, err
+		}
+		reporter.ObserveResponseModel(responseObject)
+		if detail, ok := helps.ParseCodexUsage(terminalEvent); ok {
+			usageDetail = detail
+		}
+		translationBody = terminalEvent
+		if to == sdktranslator.FormatOpenAIResponse {
+			translationBody = responseObject
+		}
+	}
 	// Ensure we at least record the request even if upstream doesn't return usage
 	// Translate response back to source format when needed
 	var param any
-	out := sdktranslator.TranslateNonStream(ctx, to, responseFormat, req.Model, helps.ApplyPatchOriginalRequest(req, opts), translated, body, &param)
+	out := sdktranslator.TranslateNonStream(ctx, to, responseFormat, req.Model, helps.ApplyPatchOriginalRequest(req, opts), translated, translationBody, &param)
 	if helps.ApplyPatchTranslationError(param) != nil || len(out) == 0 {
 		return cliproxyexecutor.Response{}, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage}
 	}
-	reporter.Publish(ctx, helps.ParseOpenAIUsage(body))
+	reporter.Publish(ctx, usageDetail)
 	if responseFormat == sdktranslator.FormatOpenAIResponse {
 		out = helps.EnsureResponsesUsageDetails(out)
 	}
@@ -386,6 +413,13 @@ func (e *OpenAICompatExecutor) executeStreamWithCredentials(ctx context.Context,
 	from := opts.SourceFormat
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
 	to := sdktranslator.FromString("openai")
+	endpoint := "/chat/completions"
+	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
+	useResponsesWire := opts.Alt != "responses/compact" && e.usesResponsesWire(auth, compat, baseModel, requestedModel)
+	if useResponsesWire {
+		to = helps.OpenAICompatResponsesTarget(from)
+		endpoint = "/responses"
+	}
 	originalPayloadSource := req.Payload
 	if len(opts.OriginalRequest) > 0 {
 		originalPayloadSource = opts.OriginalRequest
@@ -400,30 +434,37 @@ func (e *OpenAICompatExecutor) executeStreamWithCredentials(ctx context.Context,
 	originalTranslated = helps.SetStringIfDifferent(originalTranslated, "model", baseModel)
 	doc := ojson.NewDoc(translated)
 	helps.SetStringIfDifferentDoc(doc, "model", baseModel)
+	if useResponsesWire {
+		helps.PrepareOpenAICompatResponsesRequestDoc(doc, from, to, originalPayload, req.Model, true)
+	}
 
 	if err = helps.ApplyRequestThinkingDoc(doc, req, opts, from.String(), to.String(), e.Identifier(), updatesChanged); err != nil {
 		return nil, err
 	}
 
-	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
-	if helps.ShouldNormalizeOpenAIToolResultsForModel(compat, baseModel, requestedModel) {
+	if !useResponsesWire && helps.ShouldNormalizeOpenAIToolResultsForModel(compat, baseModel, requestedModel) {
 		helps.NormalizeOpenAIToolResultsTextOnlyDoc(doc)
 	}
 	if opts.Alt != "responses/compact" {
-		useMCT := helps.ShouldUseMaxCompletionTokensForModel(compat, baseModel, requestedModel)
-		helps.NormalizeOpenAIMaxTokensDoc(doc, useMCT)
+		if !useResponsesWire {
+			useMCT := helps.ShouldUseMaxCompletionTokensForModel(compat, baseModel, requestedModel)
+			helps.NormalizeOpenAIMaxTokensDoc(doc, useMCT)
+		}
 		if err = e.applyPromptCacheKeyWithCompatDoc(ctx, auth, compat, from, baseModel, req, opts, doc); err != nil {
 			return nil, err
 		}
 	}
 
-	// Request usage data in the final streaming chunk so that token statistics
-	// are captured even when the upstream is an OpenAI-compatible provider.
-	helps.SetBoolIfDifferentDoc(doc, "stream_options.include_usage", true)
+	if !useResponsesWire {
+		// Request usage data in the final streaming chunk so that token statistics
+		// are captured even when the upstream is an OpenAI-compatible provider.
+		// The Responses API always reports usage on its terminal event.
+		helps.SetBoolIfDifferentDoc(doc, "stream_options.include_usage", true)
+	}
 
-	url := strings.TrimSuffix(baseURL, "/") + "/chat/completions"
-	helps.ApplyPayloadConfigWithRequestDoc(e.cfg, baseModel, to.String(), from.String(), "", doc, originalTranslated, requestedModel, requestPath, opts.Headers)
+	url := strings.TrimSuffix(baseURL, "/") + endpoint
+	helps.ApplyPayloadConfigWithRequestDoc(e.cfg, baseModel, openAICompatPayloadProtocol(to, useResponsesWire), from.String(), "", doc, originalTranslated, requestedModel, requestPath, opts.Headers)
 	translated = doc.Bytes()
 	reporter.SetTranslatedReasoningEffort(translated, to.String())
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(translated))
@@ -557,12 +598,33 @@ func (e *OpenAICompatExecutor) executeStreamWithCredentials(ctx context.Context,
 					sawFinishReason = true
 				}
 			}
+			responsesTerminal := false
+			if useResponsesWire {
+				if isDone {
+					// A Responses stream completes only with a semantic terminal event; a bare
+					// [DONE] before it is left unconfirmed and reported as truncated below.
+					return true
+				}
+				eventType := ojson.GetBytesNoCopy(dataPayload, "type").String()
+				if eventType == "" {
+					eventType = eventName
+				}
+				responsesTerminal = helps.IsResponsesTerminalEventType(eventType)
+			}
 
 			// Observe complete upstream frames before translation or downstream backpressure.
-			if !isDone && len(dataLines) > 1 {
-				streamUsage.ObserveOpenAIStream(dataPayload)
+			if useResponsesWire {
+				if len(dataLines) > 1 {
+					streamUsage.ObserveResponsesStream(dataPayload)
+				}
+				reporter.ObserveResponseModel(dataPayload)
+				helps.ObserveResponsesTokenEvent(reporter, dataPayload)
+			} else {
+				if !isDone && len(dataLines) > 1 {
+					streamUsage.ObserveOpenAIStream(dataPayload)
+				}
+				helps.ObserveChatTokenEvent(reporter, dataPayload)
 			}
-			helps.ObserveChatTokenEvent(reporter, dataPayload)
 			streamLine := append([]byte("data: "), dataPayload...)
 			chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, helps.ApplyPatchOriginalRequest(req, opts), translated, streamLine, &param, claudeInputTokens)
 			helps.RecordApplyPatchStreamFailure(ctx, param, reporter, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage})
@@ -578,7 +640,7 @@ func (e *OpenAICompatExecutor) executeStreamWithCredentials(ctx context.Context,
 				publishStreamError(statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage}, false)
 				return true
 			}
-			if isDone {
+			if isDone || responsesTerminal {
 				seenDone = true
 				return true
 			}
@@ -589,7 +651,11 @@ func (e *OpenAICompatExecutor) executeStreamWithCredentials(ctx context.Context,
 		for scanner.Scan() {
 			line := scanner.Bytes()
 			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
-			streamUsage.ObserveOpenAIStream(line)
+			if useResponsesWire {
+				streamUsage.ObserveResponsesStream(line)
+			} else {
+				streamUsage.ObserveOpenAIStream(line)
+			}
 			trimmedLine := bytes.TrimSpace(line)
 			if len(trimmedLine) == 0 {
 				if processFrame() {
@@ -620,7 +686,7 @@ func (e *OpenAICompatExecutor) executeStreamWithCredentials(ctx context.Context,
 		if !streamFailed && !streamAborted && helps.EndApplyPatchStream(ctx, param, reporter, out, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage}) {
 			return
 		}
-		if !streamFailed && !streamAborted && !seenDone && errScan == nil && responseFormat == sdktranslator.FormatOpenAIResponse && ctx.Err() == nil && helps.CanFinalizeResponseStream(param) {
+		if !useResponsesWire && !streamFailed && !streamAborted && !seenDone && errScan == nil && responseFormat == sdktranslator.FormatOpenAIResponse && ctx.Err() == nil && helps.CanFinalizeResponseStream(param) {
 			finalChunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, helps.ApplyPatchOriginalRequest(req, opts), translated, []byte("data: [DONE]"), &param, claudeInputTokens)
 			for _, finalChunk := range finalChunks {
 				select {
@@ -651,8 +717,12 @@ func (e *OpenAICompatExecutor) executeStreamWithCredentials(ctx context.Context,
 		} else if !seenDone {
 			// Without a translator-confirmed terminal state, a clean Responses or Claude EOF
 			// without [DONE] remains a failed stream instead of completing it.
-			if responseFormat == sdktranslator.FormatOpenAIResponse || (responseFormat == sdktranslator.FormatClaude && !sawFinishReason) {
-				streamErr := statusErr{code: http.StatusBadGateway, msg: "upstream stream closed before [DONE]", streamTruncated: true}
+			if useResponsesWire || responseFormat == sdktranslator.FormatOpenAIResponse || (responseFormat == sdktranslator.FormatClaude && !sawFinishReason) {
+				msg := "upstream stream closed before [DONE]"
+				if useResponsesWire {
+					msg = "upstream stream closed before response.completed"
+				}
+				streamErr := statusErr{code: http.StatusBadGateway, msg: msg, streamTruncated: true}
 				helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
 				if !helps.RecordApplyPatchStreamFailureWithUsage(ctx, param, reporter, &streamUsage, streamErr) {
 					if !streamUsage.PublishFailure(ctx, reporter, streamErr) {
@@ -1154,6 +1224,7 @@ func (e *OpenAICompatExecutor) resolveCompatConfig(auth *cliproxyauth.Auth, req 
 		// non-secret options belong to the credential selected for this attempt.
 		var options struct {
 			SupportPromptCacheKey bool                              `json:"support-prompt-cache-key"`
+			WireAPI               string                            `json:"wire-api"`
 			Models                []config.OpenAICompatibilityModel `json:"models"`
 		}
 		present := false
@@ -1173,9 +1244,14 @@ func (e *OpenAICompatExecutor) resolveCompatConfig(auth *cliproxyauth.Auth, req 
 			present = true
 		}
 		if present {
+			wireAPI := options.WireAPI
+			if strings.TrimSpace(wireAPI) == "" {
+				wireAPI = auth.Attributes["wire_api"]
+			}
 			return &config.OpenAICompatibility{
 				Name:                  auth.Attributes["compat_name"],
 				SupportPromptCacheKey: options.SupportPromptCacheKey,
+				WireAPI:               wireAPI,
 				Models:                options.Models,
 			}
 		}
@@ -1215,6 +1291,24 @@ func (e *OpenAICompatExecutor) resolveCompatConfig(auth *cliproxyauth.Auth, req 
 		}
 	}
 	return nil
+}
+
+// usesResponsesWire reports whether the request targets the upstream Responses API.
+func (e *OpenAICompatExecutor) usesResponsesWire(auth *cliproxyauth.Auth, compat *config.OpenAICompatibility, baseModel, requestedModel string) bool {
+	var attrWireAPI string
+	if auth != nil && auth.Attributes != nil {
+		attrWireAPI = auth.Attributes["wire_api"]
+	}
+	return helps.OpenAICompatUsesResponsesWire(compat, attrWireAPI, baseModel, requestedModel)
+}
+
+// openAICompatPayloadProtocol returns the target protocol name used by payload rules.
+// Responses-wire requests are matched as "codex", the Responses-shaped payload protocol.
+func openAICompatPayloadProtocol(to sdktranslator.Format, useResponsesWire bool) string {
+	if useResponsesWire {
+		return sdktranslator.FormatCodex.String()
+	}
+	return to.String()
 }
 
 func (e *OpenAICompatExecutor) overrideModel(payload []byte, model string) []byte {
