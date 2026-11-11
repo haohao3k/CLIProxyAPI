@@ -71,7 +71,7 @@ func (e *OpenAICompatExecutor) PrepareRequest(req *http.Request, auth *cliproxya
 	if req == nil {
 		return nil
 	}
-	_, apiKey := e.resolveCredentials(auth)
+	baseURL, apiKey := e.resolveCredentials(auth)
 	if strings.TrimSpace(apiKey) != "" {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
@@ -81,6 +81,7 @@ func (e *OpenAICompatExecutor) PrepareRequest(req *http.Request, auth *cliproxya
 		attrs = auth.Attributes
 	}
 	util.ApplyCustomHeadersFromAttrs(req, attrs)
+	helps.EnsureOpencodeSessionHeader(req, req.Context(), e.Identifier(), auth, nil, baseURL, cliproxyexecutor.Options{}, cliproxyexecutor.Request{})
 	return nil
 }
 
@@ -212,6 +213,7 @@ func (e *OpenAICompatExecutor) executeWithCredentials(ctx context.Context, auth 
 		attrs = auth.Attributes
 	}
 	util.ApplyCustomHeadersFromAttrs(httpReq, attrs, opts.Headers)
+	helps.EnsureOpencodeSessionHeader(httpReq, ctx, e.Identifier(), auth, compat, baseURL, opts, req)
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
 		authID = auth.ID
@@ -256,6 +258,9 @@ func (e *OpenAICompatExecutor) executeWithCredentials(ctx context.Context, auth 
 		return resp, err
 	}
 	helps.AppendAPIResponseChunk(ctx, e.cfg, body)
+	if !useResponsesWire {
+		body = helps.NormalizeMistralChatResponse(body, baseURL)
+	}
 	reporter.ObserveResponseModel(body)
 	usageDetail := helps.ParseOpenAIUsage(body)
 	translationBody := body
@@ -330,6 +335,7 @@ func (e *OpenAICompatExecutor) executeImages(ctx context.Context, auth *cliproxy
 		attrs = auth.Attributes
 	}
 	util.ApplyCustomHeadersFromAttrs(httpReq, attrs, opts.Headers)
+	helps.EnsureOpencodeSessionHeader(httpReq, ctx, e.Identifier(), auth, nil, baseURL, opts, req)
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
 		authID = auth.ID
@@ -489,6 +495,7 @@ func (e *OpenAICompatExecutor) executeStreamWithCredentials(ctx context.Context,
 		attrs = auth.Attributes
 	}
 	util.ApplyCustomHeadersFromAttrs(httpReq, attrs, opts.Headers)
+	helps.EnsureOpencodeSessionHeader(httpReq, ctx, e.Identifier(), auth, compat, baseURL, opts, req)
 	httpReq.Header.Set("Accept", "text/event-stream")
 	httpReq.Header.Set("Cache-Control", "no-cache")
 	var authID, authLabel, authType, authValue string
@@ -598,6 +605,9 @@ func (e *OpenAICompatExecutor) executeStreamWithCredentials(ctx context.Context,
 				return true
 			}
 			if !isDone {
+				if !useResponsesWire {
+					dataPayload = helps.NormalizeMistralChatResponse(dataPayload, baseURL)
+				}
 				if streamErr, isError := openAICompatStreamDataError(dataPayload, eventName); isError {
 					publishStreamError(streamErr, true)
 					return true
@@ -805,6 +815,7 @@ func (e *OpenAICompatExecutor) executeImagesStream(ctx context.Context, auth *cl
 		attrs = auth.Attributes
 	}
 	util.ApplyCustomHeadersFromAttrs(httpReq, attrs, opts.Headers)
+	helps.EnsureOpencodeSessionHeader(httpReq, ctx, e.Identifier(), auth, nil, baseURL, opts, req)
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
 		authID = auth.ID

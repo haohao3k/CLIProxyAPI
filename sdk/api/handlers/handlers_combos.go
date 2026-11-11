@@ -106,6 +106,9 @@ func rewriteModelInRawJSON(rawJSON []byte, targetModel string) []byte {
 	if !ojson.GetBytesNoCopy(rawJSON, "model").Exists() {
 		return rawJSON
 	}
+	if _, qualModel := resolveProviderQualifiedModel(targetModel, targetModel); qualModel != "" {
+		targetModel = qualModel
+	}
 	doc := ojson.NewDoc(rawJSON)
 	if err := doc.Set("model", targetModel); err != nil {
 		return rawJSON

@@ -207,6 +207,12 @@ func (h *BaseAPIHandler) getRequestDetailsWithOptions(modelName string, allowIma
 	if len(providers) == 0 && baseModel != resolvedModelName {
 		providers = util.GetProviderName(resolvedModelName)
 	}
+	if len(providers) == 0 {
+		if qualProviders, qualModel := resolveProviderQualifiedModel(baseModel, resolvedModelName); len(qualProviders) > 0 {
+			providers = qualProviders
+			resolvedModelName = qualModel
+		}
+	}
 
 	if len(providers) == 0 {
 		// The client asked for a model this proxy cannot route. Report it as a request
@@ -230,6 +236,75 @@ func (h *BaseAPIHandler) getRequestDetailsWithOptions(modelName string, allowIma
 	// The thinking suffix is preserved in the model name itself, so no
 	// metadata-based configuration passing is needed.
 	return providers, resolvedModelName, nil
+}
+
+func resolveProviderQualifiedModel(baseModel, resolvedModelName string) ([]string, string) {
+	prefix, rest, ok := strings.Cut(strings.TrimSpace(baseModel), "/")
+	if !ok {
+		return nil, ""
+	}
+	prefix = strings.ToLower(strings.TrimSpace(prefix))
+	rest = strings.TrimSpace(rest)
+	if prefix == "" || rest == "" {
+		return nil, ""
+	}
+
+	var candidateKeys []string
+	switch prefix {
+	case "opencode", "opencode-go", "ocg", "opencode_go":
+		candidateKeys = []string{"opencode"}
+	case "zai", "z.ai", "glm":
+		candidateKeys = []string{"zai"}
+	case "mistral", "mistral-vibe", "openai-compatible-mistral":
+		candidateKeys = []string{"openai-compatible-mistral", "mistral"}
+	case "cursor", "cu":
+		candidateKeys = []string{"cursor"}
+	case "codex", "openai":
+		candidateKeys = []string{"codex"}
+	case "claude", "anthropic":
+		candidateKeys = []string{"claude"}
+	case "gemini", "gemini-cli":
+		candidateKeys = []string{"gemini", "gemini-cli"}
+	case "antigravity", "agy":
+		candidateKeys = []string{"antigravity"}
+	case "kimi":
+		candidateKeys = []string{"kimi"}
+	case "qwen":
+		candidateKeys = []string{"qwen"}
+	case "xai", "grok":
+		candidateKeys = []string{"xai"}
+	case "meta":
+		candidateKeys = []string{"meta"}
+	case "devin":
+		candidateKeys = []string{"devin"}
+	case "vertex":
+		candidateKeys = []string{"vertex"}
+	case "aistudio":
+		candidateKeys = []string{"aistudio"}
+	default:
+		candidateKeys = []string{prefix, util.OpenAICompatibleProviderKey(prefix)}
+	}
+
+	subProviders := util.GetProviderName(rest)
+	matched := make([]string, 0, len(candidateKeys))
+	for _, p := range subProviders {
+		for _, want := range candidateKeys {
+			if strings.EqualFold(strings.TrimSpace(p), want) {
+				matched = append(matched, p)
+				break
+			}
+		}
+	}
+	if len(matched) == 0 {
+		return nil, ""
+	}
+
+	parsed := thinking.ParseSuffix(resolvedModelName)
+	nextResolved := rest
+	if parsed.HasSuffix {
+		nextResolved = fmt.Sprintf("%s(%s)", rest, parsed.RawSuffix)
+	}
+	return matched, nextResolved
 }
 
 func (h *BaseAPIHandler) validateImageOnlyModel(modelName string, allowImageModel bool) *interfaces.ErrorMessage {

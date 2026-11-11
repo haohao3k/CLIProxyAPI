@@ -3,7 +3,11 @@ package helps
 import (
 	"bufio"
 	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/MoeForge/moego/ojson"
@@ -11,7 +15,9 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 )
 
@@ -64,6 +70,35 @@ func IsOpencodeUpstream(provider string, auth *cliproxyauth.Auth, compat *config
 	}
 	lowerURL := strings.ToLower(strings.TrimSpace(baseURL))
 	return strings.Contains(lowerURL, "opencode.ai/zen/go")
+}
+
+// EnsureOpencodeSessionHeader sets the required x-opencode-session header on
+// OpenCode Go requests if the caller did not already provide one.
+func EnsureOpencodeSessionHeader(r *http.Request, ctx context.Context, provider string, auth *cliproxyauth.Auth, compat *config.OpenAICompatibility, baseURL string, opts cliproxyexecutor.Options, req cliproxyexecutor.Request) {
+	if r == nil || !IsOpencodeUpstream(provider, auth, compat, baseURL) {
+		return
+	}
+	if strings.TrimSpace(r.Header.Get("x-opencode-session")) != "" {
+		return
+	}
+	if opts.Headers != nil {
+		if existing := strings.TrimSpace(opts.Headers.Get("x-opencode-session")); existing != "" && len(existing) <= 256 {
+			r.Header.Set("x-opencode-session", existing)
+			return
+		}
+	}
+	seed := util.SessionIDFromContext(ctx)
+	if seed == "" {
+		seed = ProviderSessionUUID("opencode", opts.Metadata, req.Metadata)
+	}
+	if seed == "" && auth != nil {
+		seed = auth.ID
+	}
+	if seed == "" {
+		seed = "default"
+	}
+	sum := sha256.Sum256([]byte("opencode-go\x00generic\x00" + seed))
+	r.Header.Set("x-opencode-session", "ses_"+hex.EncodeToString(sum[:16]))
 }
 
 // ShouldUseOpencodeResponsesWire reports whether an OpenCode Go request should use
