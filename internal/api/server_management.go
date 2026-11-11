@@ -141,6 +141,7 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/codex-metering-bypass", s.mgmt.GetCodexMeteringBypass)
 		mgmt.PUT("/codex-metering-bypass", s.mgmt.PutCodexMeteringBypass)
 		mgmt.PATCH("/codex-metering-bypass", s.mgmt.PutCodexMeteringBypass)
+		mgmt.GET("/codex-metering-bypass/telemetry", s.mgmt.GetCodexMeteringBypassTelemetry)
 
 		mgmt.GET("/claude-api-key", s.mgmt.GetClaudeKeys)
 		mgmt.PUT("/claude-api-key", s.mgmt.PutClaudeKeys)

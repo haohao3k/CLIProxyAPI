@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/MoeForge/moego/ojson"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/net/context"
 )
@@ -203,6 +204,7 @@ func (h *BaseAPIHandler) maybeHijackClientCompaction(ctx context.Context, modelN
 	if err != nil {
 		return modelName, rawJSON
 	}
+	helps.RecordCodexCompactHijack()
 	log.Infof("[CODEX-COMPACT-HIJACK] client compaction detected (model=%s, items=%d) -> rerouted to %s", modelName, len(items), target)
 	return target, rewritten
 }

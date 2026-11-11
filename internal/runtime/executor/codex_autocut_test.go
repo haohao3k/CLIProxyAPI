@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -682,5 +684,118 @@ func TestCodexExecutor_MeteringBypassEndToEnd_NativeOAuthAndGoSidecar(t *testing
 	}
 	if strings.Contains(downstreamSSE, "const pad") || strings.Contains(downstreamSSE, "__finalize_9f3") {
 		t.Fatalf("expected __finalize_9f3 and const pad stripped from downstream SSE, got:\n%s", downstreamSSE)
+	}
+}
+
+func TestCodexAutocutTelemetry_JSONLAndQuotaDeltaAndRaceLostUsage(t *testing.T) {
+	tmpDir := t.TempDir()
+	jsonlPath := filepath.Join(tmpDir, codexAutocutTelemetryFileName)
+
+	auth := &cliproxyauth.Auth{
+		ID:       "codex-forensic-acct",
+		Label:    "forensic@example.com",
+		Provider: "codex",
+		Metadata: map[string]any{"email": "forensic@example.com"},
+	}
+
+	// 1. Observe initial 12% quota -> delta 0, then 14.5% -> delta +2.5% (strictly observational, Iron Rule #4!)
+	clearCodexAutocutViolations("innocent-session-42")
+	hdr1 := http.Header{"X-Codex-Primary-Used-Percent": []string{"12.0"}}
+	u1, r1, d1, ok1 := observeCodexQuotaCircuitBreakerWithMeta(context.Background(), nil, auth, hdr1, "sess-forensic-1", "gpt-6-astra")
+	if !ok1 || u1 != 12.0 || r1 != 88.0 || d1 != 0 {
+		t.Fatalf("unexpected initial quota observation: ok=%v u=%v r=%v d=%v", ok1, u1, r1, d1)
+	}
+
+	hdr2 := http.Header{"X-Codex-Primary-Used-Percent": []string{"14.5"}}
+	u2, r2, d2, ok2 := observeCodexQuotaCircuitBreakerWithMeta(context.Background(), nil, auth, hdr2, "sess-forensic-1", "gpt-6-astra")
+	if !ok2 || u2 != 14.5 || r2 != 85.5 || d2 != 2.5 {
+		t.Fatalf("expected +2.5%% quota delta on second observation, got ok=%v u=%v r=%v d=%v", ok2, u2, r2, d2)
+	}
+	if gotStreak := getCodexAutocutStreak("innocent-session-42"); gotStreak != 0 {
+		t.Fatalf("Iron Rule #4 violation: account quota delta must NEVER arm innocent sessions, got streak=%d", gotStreak)
+	}
+
+	// 2. Simulate a RACE-LOST turn where response.completed + usage arrived in rawBuffer alongside toolpad
+	raceStream := strings.Join([]string{
+		testSSEBlock("response.created", map[string]any{
+			"type":     "response.created",
+			"response": map[string]any{"id": "resp_race_1"},
+		}),
+		testSSEBlock("response.output_item.added", map[string]any{
+			"type":         "response.output_item.added",
+			"output_index": 0,
+			"item":         map[string]any{"id": "fc_race", "type": "function_call", "name": "bash", "call_id": "call_race"},
+		}),
+		testSSEBlock("response.function_call_arguments.delta", map[string]any{
+			"type":         "response.function_call_arguments.delta",
+			"item_id":      "fc_race",
+			"output_index": 0,
+			"delta":        `{"cmd":"pwd","__pad9f3":"short"}`,
+		}),
+		testSSEBlock("response.completed", map[string]any{
+			"type": "response.completed",
+			"response": map[string]any{
+				"id": "resp_race_1",
+				"usage": map[string]any{
+					"input_tokens":         42000,
+					"output_tokens":        315,
+					"input_tokens_details": map[string]any{"cached_tokens": 38000},
+				},
+			},
+		}),
+	}, "")
+
+	var out bytes.Buffer
+	tel := StreamWithAutocut(strings.NewReader(raceStream), &out, nil, CodexAutocutOptions{
+		Model:               "gpt-6-astra",
+		SessionID:           "sess-forensic-1",
+		FinalizeMode:        true,
+		HardArgCap:          8000,
+		EstimateInputTokens: 42000,
+		AuthID:              auth.ID,
+		AuthLabel:           auth.Label,
+		AuthEmail:           "forensic@example.com",
+		HasQuota:            true,
+		UsedPct:             u2,
+		RemainingPct:        r2,
+		QuotaDeltaPct:       d2,
+		TelemetryLogPath:    jsonlPath,
+		OnAbortUpstream:     func(string) {},
+	})
+
+	if !tel.RaceLost || tel.How != "toolpad-racelost" {
+		t.Fatalf("expected RaceLost=true and how=toolpad-racelost, got %+v", tel)
+	}
+	if tel.UpstreamInputTokens != 42000 || tel.UpstreamOutputTokens != 315 || tel.UpstreamCachedTokens != 38000 {
+		t.Fatalf("expected upstream usage 42000/315/38000 extracted from rawBuffer, got %d/%d/%d",
+			tel.UpstreamInputTokens, tel.UpstreamOutputTokens, tel.UpstreamCachedTokens)
+	}
+	if tel.LastToolName != "bash" || tel.ToolCallCount != 1 {
+		t.Fatalf("expected tool=bash(1), got %s(%d)", tel.LastToolName, tel.ToolCallCount)
+	}
+
+	rawJSONL, errRead := os.ReadFile(jsonlPath)
+	if errRead != nil || len(rawJSONL) == 0 {
+		t.Fatalf("expected persisted JSONL forensic file at %s, err=%v", jsonlPath, errRead)
+	}
+	var persisted CodexAutocutTurnRecord
+	if err := json.Unmarshal(bytes.TrimSpace(rawJSONL), &persisted); err != nil {
+		t.Fatalf("failed to unmarshal JSONL line: %v", err)
+	}
+	if !persisted.LeakRisk || !persisted.RaceLost || persisted.UpstreamInputTokens != 42000 || persisted.QuotaDeltaPct != 2.5 {
+		t.Fatalf("unexpected persisted record: %+v", persisted)
+	}
+
+	snap := SnapshotCodexAutocutTelemetry(nil, tmpDir, CodexTelemetryQueryOptions{
+		Limit:     10,
+		LeaksOnly: true,
+		SessionID: "sess-forensic-1",
+		AuthQuery: "forensic",
+	})
+	if len(snap.RecentTurns) == 0 || snap.RecentTurns[0].How != "toolpad-racelost" {
+		t.Fatalf("expected toolpad-racelost in SnapshotCodexAutocutTelemetry LeaksOnly query, got %+v", snap.RecentTurns)
+	}
+	if len(snap.QuotaDeltas) == 0 || snap.QuotaDeltas[0].DeltaPct != 2.5 {
+		t.Fatalf("expected +2.5%% quota delta event in snapshot, got %+v", snap.QuotaDeltas)
 	}
 }

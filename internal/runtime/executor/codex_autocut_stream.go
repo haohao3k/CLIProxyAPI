@@ -18,7 +18,6 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
-	log "github.com/sirupsen/logrus"
 )
 
 const (
@@ -701,13 +700,30 @@ type CodexAutocutOptions struct {
 	PostcallAbortMin    int
 	EstimateInputTokens int
 	OnAbortUpstream     func(how string)
+	AuthID              string
+	AuthLabel           string
+	AuthEmail           string
+	HasQuota            bool
+	UsedPct             float64
+	RemainingPct        float64
+	QuotaDeltaPct       float64
+	TelemetryLogPath    string
 }
 
 type CodexAutocutTelemetry struct {
-	How            string
-	DeliveredChars int
-	OutputTokens   int
-	RaceLost       bool
+	How                  string
+	AbortReason          string
+	DeliveredChars       int
+	OutputTokens         int
+	RaceLost             bool
+	MaxToolArgsLen       int
+	FinalizeLen          int
+	ToolCallCount        int
+	LastToolName         string
+	DurationMs           int64
+	UpstreamInputTokens  int
+	UpstreamOutputTokens int
+	UpstreamCachedTokens int
 }
 
 var introPayloadEvents = map[string]bool{
@@ -753,9 +769,10 @@ func autocutCloneMap(m map[string]any) map[string]any {
 	return res
 }
 
-// applyCodexAutocutSessionTelemetry updates per-session violation streaks (:9gl-med, Iron Rule #4)
-// and race-loss session guard based on StreamWithAutocut telemetry.
-func applyCodexAutocutSessionTelemetry(sessionID, model string, tel CodexAutocutTelemetry) {
+// applyCodexAutocutSessionTelemetry updates per-session violation streaks (:9gl-med, Iron Rule #4),
+// race-loss session guard, and structured forensic telemetry based on StreamWithAutocut telemetry.
+func applyCodexAutocutSessionTelemetry(opts CodexAutocutOptions, tel CodexAutocutTelemetry) {
+	sessionID := opts.SessionID
 	how := tel.How
 	if how == "" {
 		how = "eof"
@@ -772,22 +789,26 @@ func applyCodexAutocutSessionTelemetry(sessionID, model string, tel CodexAutocut
 		decayCodexAutocutViolations(sessionID)
 	}
 	recordCodexSessionRisk(sessionID, how)
-	if tel.RaceLost {
-		log.Warnf("[AC:RACE-LOST] session=%s model=%s how=%s delivered=%d", sessionID, model, how, deliveredEst)
-	} else {
-		log.Debugf("✂ AUTOCUT · how=%s delivered=%d model=%s session=%s", how, deliveredEst, model, sessionID)
-	}
+	streak := getCodexAutocutStreak(sessionID)
+	recordCodexAutocutTurnTelemetry(opts, tel, streak)
 }
 
 // StreamWithAutocut reads raw SSE bytes from upstream, runs the verbatim :9gl-med
 // Autocut + Finalize state machine, fires OnAbortUpstream (SO_LINGER=0 TCP RST)
 // before setting cutTriggered (Iron Rule #9), and writes clean SSE events downstream.
 func StreamWithAutocut(upstream io.Reader, out io.Writer, flusher http.Flusher, opts CodexAutocutOptions) CodexAutocutTelemetry {
+	startedAt := time.Now()
 	cutTriggered := false
 	cutHow := ""
+	abortReason := ""
 	socketPreAborted := false
-	responseId := fmt.Sprintf("resp_%d", time.Now().UnixMilli())
+	responseId := fmt.Sprintf("resp_%d", startedAt.UnixMilli())
 	totalDeliveredChars := 0
+	maxToolArgsLen := 0
+	maxFinalizeLen := 0
+	toolCallCount := 0
+	lastToolName := ""
+	upInTok, upOutTok, upCachedTok := 0, 0, 0
 	var outputItems []any
 
 	// Iron Rule #10: introHoldActive = !opts.FinalizeMode and downCh = 8192 coalesced
@@ -853,6 +874,9 @@ func StreamWithAutocut(upstream io.Reader, out io.Writer, flusher http.Flusher, 
 	triggerImmediateAbort := func(how string) {
 		if cutTriggered {
 			return
+		}
+		if abortReason == "" {
+			abortReason = how
 		}
 		if opts.OnAbortUpstream != nil {
 			opts.OnAbortUpstream(how)
@@ -1196,6 +1220,10 @@ func StreamWithAutocut(upstream io.Reader, out io.Writer, flusher http.Flusher, 
 				discardPreambleHold()
 				argsAccum = ""
 				argsDeliveredLen = 0
+				toolCallCount++
+				if itemName != "" {
+					lastToolName = itemName
+				}
 			}
 			enqueueEvent("response.output_item.added", data, 0)
 			return
@@ -1312,6 +1340,9 @@ func StreamWithAutocut(upstream io.Reader, out io.Writer, flusher http.Flusher, 
 			if finalizeActive && (finalizeToolItemId == "" || autocutStrField(data, "item_id") == finalizeToolItemId) {
 				delta := autocutStrField(data, "delta")
 				finalizeText += delta
+				if len(finalizeText) > maxFinalizeLen {
+					maxFinalizeLen = len(finalizeText)
+				}
 				tailStart := autocutMaxInt(0, finalizeDeliveredLen-40)
 				finalizeTail := finalizeText[tailStart:]
 				if finalizePadTriggerRe.MatchString(finalizeTail) {
@@ -1336,6 +1367,9 @@ func StreamWithAutocut(upstream io.Reader, out io.Writer, flusher http.Flusher, 
 
 			delta := autocutStrField(data, "delta")
 			argsAccum += delta
+			if len(argsAccum) > maxToolArgsLen {
+				maxToolArgsLen = len(argsAccum)
+			}
 			isCustom := eventType == "response.custom_tool_call_input.delta" || autocutStrField(currentItem, "type") == "custom_tool_call"
 
 			pad := detectPadInArgs(argsAccum, autocutMaxInt(0, argsDeliveredLen-40), isCustom)
@@ -1543,6 +1577,9 @@ func StreamWithAutocut(upstream io.Reader, out io.Writer, flusher http.Flusher, 
 						rawPayload = inp
 					}
 				}
+				if len(rawPayload) > maxToolArgsLen {
+					maxToolArgsLen = len(rawPayload)
+				}
 				hasPad := strings.Contains(rawPayload, CodexPadKey) || (isCustom && customPadRe.MatchString(rawPayload))
 				if rawPayload != "" && hasPad {
 					how := "toolpad"
@@ -1623,6 +1660,9 @@ func StreamWithAutocut(upstream io.Reader, out io.Writer, flusher http.Flusher, 
 		if eventType == "response.completed" || eventType == "response.done" {
 			if terminalSent {
 				return
+			}
+			if iTok, oTok, cTok := extractUpstreamUsageFromResponseMap(data); iTok > 0 || oTok > 0 {
+				upInTok, upOutTok, upCachedTok = iTok, oTok, cTok
 			}
 			if finalizeActive {
 				closeFinalizeAndCut("")
@@ -1732,21 +1772,26 @@ func StreamWithAutocut(upstream io.Reader, out io.Writer, flusher http.Flusher, 
 					combinedFin := finalizeText + lookahead
 					if !finalizeActive && strings.Contains(combinedArgs, CodexPadKey) {
 						socketPreAborted = true
+						abortReason = "pre-scan-toolpad"
 						opts.OnAbortUpstream("pre-scan-toolpad")
 					} else if (finalizeActive || strings.Contains(rawBuffer, `"type":"custom_tool_call"`)) && finalizePadTriggerRe.MatchString(combinedFin) {
 						socketPreAborted = true
+						abortReason = "pre-scan-finalize"
 						opts.OnAbortUpstream("pre-scan-finalize")
 					} else if !finalizeActive && hardArgCap > 0 && len(combinedArgs) >= hardArgCap {
 						socketPreAborted = true
+						abortReason = "pre-scan-argcap"
 						opts.OnAbortUpstream("pre-scan-argcap")
 					} else if !finalizeActive && isOuterJsonClosed(combinedArgs) && !strings.Contains(combinedArgs, CodexPadKey) {
 						socketPreAborted = true
+						abortReason = "pre-scan-unpadded-close"
 						opts.OnAbortUpstream("pre-scan-unpadded-close")
 					}
 				}
 				if !socketPreAborted && (finalizeActive || strings.Contains(rawBuffer, `"type":"custom_tool_call"`)) &&
 					(strings.Contains(rawBuffer, "custom_tool_call_input.done") || (strings.Contains(rawBuffer, `"type":"response.output_item.done"`) && strings.Contains(rawBuffer, CodexFinalizeToolName))) {
 					socketPreAborted = true
+					abortReason = "pre-scan-finalize-done"
 					opts.OnAbortUpstream("pre-scan-finalize-done")
 				}
 			}
@@ -1831,13 +1876,27 @@ func StreamWithAutocut(upstream io.Reader, out io.Writer, flusher http.Flusher, 
 		}
 	}
 
-	tel := CodexAutocutTelemetry{
-		How:            cutHow,
-		DeliveredChars: totalDeliveredChars,
-		OutputTokens:   autocutMaxInt(1, (totalDeliveredChars+2)/4),
-		RaceLost:       strings.HasSuffix(cutHow, "-racelost") || cutHow == "terminal",
+	isRaceLost := strings.HasSuffix(cutHow, "-racelost") || cutHow == "terminal"
+	if isRaceLost && upInTok == 0 && upOutTok == 0 {
+		upInTok, upOutTok, upCachedTok = extractUpstreamUsageFromRawSSE(rawBuffer)
 	}
-	applyCodexAutocutSessionTelemetry(opts.SessionID, opts.Model, tel)
+
+	tel := CodexAutocutTelemetry{
+		How:                  cutHow,
+		AbortReason:          abortReason,
+		DeliveredChars:       totalDeliveredChars,
+		OutputTokens:         autocutMaxInt(1, (totalDeliveredChars+2)/4),
+		RaceLost:             isRaceLost,
+		MaxToolArgsLen:       maxToolArgsLen,
+		FinalizeLen:          maxFinalizeLen,
+		ToolCallCount:        toolCallCount,
+		LastToolName:         lastToolName,
+		DurationMs:           time.Since(startedAt).Milliseconds(),
+		UpstreamInputTokens:  upInTok,
+		UpstreamOutputTokens: upOutTok,
+		UpstreamCachedTokens: upCachedTok,
+	}
+	applyCodexAutocutSessionTelemetry(opts, tel)
 	return tel
 }
 

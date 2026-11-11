@@ -270,9 +270,16 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	if autocutActive {
 		httpResp, err = e.executeViaInProcessGoSidecar(ctx, auth, httpReq, upstreamBody, prepareHeaders, upstreamModel, autocutSessionID, finalizeMode, estInputTokens, reporter, false)
 	} else {
+		if !isCompactionSummary && (opts.Headers == nil || strings.TrimSpace(opts.Headers.Get(CodexInternalCompactionHeader)) == "") {
+			RecordCodexSpecialTelemetryEvent("bypass_skipped")
+			log.Warnf("⚠️ [AC:BYPASS-SKIPPED] non-stream Codex request executing WITHOUT metering-bypass | auth=%s (%s) model=%s", authLabel, authID, upstreamModel)
+		}
 		httpClient := helps.NewUtlsHTTPClient(ctx, e.cfg, auth, 0)
 		httpClient = reporter.TrackHTTPClient(httpClient)
 		httpResp, err = doCodexRequest(httpClient, httpReq, upstreamBody, prepareHeaders, nil)
+		if err == nil && httpResp != nil {
+			observeCodexQuotaCircuitBreakerWithMeta(ctx, e.cfg, auth, httpResp.Header, "non-bypass", upstreamModel)
+		}
 	}
 	if err != nil {
 		helps.RecordAPIResponseError(ctx, e.cfg, err)

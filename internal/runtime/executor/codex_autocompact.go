@@ -992,6 +992,7 @@ func maybeCodexAutocompactMap(ctx context.Context, cfg *config.Config, body map[
 				postOverItems := maxItems > 0 && len(origItems) > maxItems && len(curInput) > maxItems
 				if postEst < threshold && !postOverItems {
 					touchAutocompactCache(entry.fingerprint, sessionID)
+					RecordCodexSpecialTelemetryEvent("autocompact_cache")
 					log.Infof("[AUTOCOMPACT] rewrite (cache) | items %d->%d | est %d->%d tokens", len(origItems), len(curInput), est0, postEst)
 					return
 				}
@@ -1027,6 +1028,7 @@ func maybeCodexAutocompactMap(ctx context.Context, cfg *config.Config, body map[
 		storeAutocompactCache(fp, fallbackText, k, isWinOnly, sessionID)
 		rewriteCodexInput(body, fallbackText, k, headAnchorTokens)
 		curInput, _ := body["input"].([]any)
+		RecordCodexSpecialTelemetryEvent("autocompact_window")
 		log.Infof("[AUTOCOMPACT] window-only rewrite | est %d->%d tokens | items %d->%d", est0, estimateCodexTokensOf(body), len(items), len(curInput))
 		return
 	}
@@ -1043,6 +1045,7 @@ func maybeCodexAutocompactMap(ctx context.Context, cfg *config.Config, body map[
 		storeAutocompactCache(fp, fallbackText, k, isWinOnly, sessionID)
 		rewriteCodexInput(body, fallbackText, k, headAnchorTokens)
 		curInput, _ := body["input"].([]any)
+		RecordCodexSpecialTelemetryEvent("autocompact_window")
 		log.Infof("[AUTOCOMPACT] window-only rewrite (external unavailable) | est %d->%d tokens | items %d->%d", est0, estimateCodexTokensOf(body), len(items), len(curInput))
 		return
 	}
@@ -1051,6 +1054,7 @@ func maybeCodexAutocompactMap(ctx context.Context, cfg *config.Config, body map[
 	storeAutocompactCache(fp, text, k, false, sessionID)
 	rewriteCodexInput(body, text, k, headAnchorTokens)
 	curInput, _ := body["input"].([]any)
+	RecordCodexSpecialTelemetryEvent("autocompact_external")
 	log.Infof("[AUTOCOMPACT] rewrite (fresh,external) | summary %dch | items %d->%d | est %d->%d tokens", len(summary), len(items), len(curInput), est0, estimateCodexTokensOf(body))
 }
 
@@ -1112,5 +1116,6 @@ func enforceCodexInputHardCapMap(cfg *config.Config, body map[string]any) {
 		}
 		est = newEst
 	}
+	RecordCodexSpecialTelemetryEvent("hard_cap")
 	log.Warnf("[AUTOCOMPACT] hard cap %d enforced: est %d->%d tokens", capTokens, est0, est)
 }

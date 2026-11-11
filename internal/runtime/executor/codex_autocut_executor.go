@@ -119,7 +119,8 @@ func (e *CodexExecutor) handleLocalTitleGenExecute(ctx context.Context, req clip
 	if !ok {
 		return cliproxyexecutor.Response{}, false
 	}
-	log.Debugf("[TITLEGEN-LOCAL] intercepted non-stream | title=%q model=%s", title, baseModel)
+	log.Infof("[TITLEGEN-LOCAL] intercepted non-stream | title=%q model=%s", title, baseModel)
+	RecordCodexSpecialTelemetryEvent("titlegen_local")
 	to := sdktranslator.FromString("codex")
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
 	originalPayload := req.Payload
@@ -146,7 +147,8 @@ func (e *CodexExecutor) handleLocalTitleGenStream(ctx context.Context, req clipr
 	if !ok {
 		return nil, false
 	}
-	log.Debugf("[TITLEGEN-LOCAL] intercepted stream | title=%q model=%s", title, baseModel)
+	log.Infof("[TITLEGEN-LOCAL] intercepted stream | title=%q model=%s", title, baseModel)
+	RecordCodexSpecialTelemetryEvent("titlegen_local")
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("codex")
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
@@ -390,7 +392,7 @@ func (e *CodexExecutor) executeViaInProcessGoSidecar(
 			return nil, errDo
 		}
 
-		observeCodexQuotaCircuitBreaker(ctx, e.cfg, auth, httpResp.Header)
+		usedPct, remainingPct, quotaDeltaPct, hasQuota := observeCodexQuotaCircuitBreakerWithMeta(ctx, e.cfg, auth, httpResp.Header, sessionID, upstreamModel)
 
 		if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 			if isCodexSidecarRetryableStatus(httpResp.StatusCode) && attempt < maxRetries && ctx.Err() == nil {
@@ -450,9 +452,12 @@ func (e *CodexExecutor) executeViaInProcessGoSidecar(
 		}
 
 		hardArgCap := DefaultHardArgCap
+		telemetryLogPath := ""
 		if e != nil && e.cfg != nil {
 			hardArgCap = e.cfg.Codex.EffectiveAutocutHardArgCap()
+			telemetryLogPath = resolveCodexTelemetryLogPath(e.cfg, "")
 		}
+		authID, authLabel, authEmail := extractAuthIdentity(auth)
 
 		combinedUpstream := io.MultiReader(bytes.NewReader(peek.prefixBytes), rawBody)
 		pr, pw := io.Pipe()
@@ -464,6 +469,14 @@ func (e *CodexExecutor) executeViaInProcessGoSidecar(
 				HardArgCap:          hardArgCap,
 				PostcallAbortMin:    5000,
 				EstimateInputTokens: estInputTokens,
+				AuthID:              authID,
+				AuthLabel:           authLabel,
+				AuthEmail:           authEmail,
+				HasQuota:            hasQuota,
+				UsedPct:             usedPct,
+				RemainingPct:        remainingPct,
+				QuotaDeltaPct:       quotaDeltaPct,
+				TelemetryLogPath:    telemetryLogPath,
 				OnAbortUpstream: func(how string) {
 					tracker.hardResetAll()
 					_ = rawBody.Close()

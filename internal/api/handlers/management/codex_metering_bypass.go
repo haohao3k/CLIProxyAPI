@@ -2,9 +2,11 @@ package management
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
 )
 
 type codexMeteringBypassResponse struct {
@@ -164,4 +166,31 @@ func (h *Handler) PutCodexMeteringBypass(c *gin.Context) {
 	}
 
 	h.persistLocked(c)
+}
+
+// GetCodexMeteringBypassTelemetry returns live + persisted forensic telemetry for Codex Autocut,
+// Finalize, per-account 5h quota deltas, and leak-risk turns (`GET /v0/management/codex-metering-bypass/telemetry`).
+func (h *Handler) GetCodexMeteringBypassTelemetry(c *gin.Context) {
+	limit := 50
+	if rawLimit := strings.TrimSpace(c.Query("limit")); rawLimit != "" {
+		if parsed, err := strconv.Atoi(rawLimit); err == nil && parsed > 0 {
+			limit = parsed
+		}
+	}
+	leaksOnly := false
+	if rawLeaks := strings.ToLower(strings.TrimSpace(c.Query("leaks_only"))); rawLeaks == "1" || rawLeaks == "true" || rawLeaks == "yes" {
+		leaksOnly = true
+	}
+	var logDir string
+	if h != nil {
+		logDir = h.logDirectory()
+	}
+	var cfgPtr = h.cfg
+	snap := executor.SnapshotCodexAutocutTelemetry(cfgPtr, logDir, executor.CodexTelemetryQueryOptions{
+		Limit:     limit,
+		LeaksOnly: leaksOnly,
+		SessionID: strings.TrimSpace(c.Query("session")),
+		AuthQuery: strings.TrimSpace(c.Query("auth")),
+	})
+	c.JSON(http.StatusOK, snap)
 }

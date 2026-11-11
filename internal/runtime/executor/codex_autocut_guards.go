@@ -366,29 +366,35 @@ func checkCodexCircuitBreakerTripped(auth *cliproxyauth.Auth) error {
 }
 
 func observeCodexQuotaCircuitBreaker(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth, headers http.Header) {
+	_, _, _, _ = observeCodexQuotaCircuitBreakerWithMeta(ctx, cfg, auth, headers, "", "")
+}
+
+func observeCodexQuotaCircuitBreakerWithMeta(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth, headers http.Header, sessionID, model string) (usedPct, remainingPct, quotaDeltaPct float64, hasQuota bool) {
 	if auth == nil || headers == nil {
-		return
+		return 0, 0, 0, false
 	}
 	rawPct := strings.TrimSpace(headers.Get("X-Codex-Primary-Used-Percent"))
 	if rawPct == "" {
-		return
+		return 0, 0, 0, false
 	}
-	usedPct, err := strconv.ParseFloat(rawPct, 64)
-	if err != nil || math.IsNaN(usedPct) {
-		return
+	parsedPct, err := strconv.ParseFloat(rawPct, 64)
+	if err != nil || math.IsNaN(parsedPct) {
+		return 0, 0, 0, false
 	}
+	usedPct = parsedPct
 	var cxCfg *config.CodexConfig
 	if cfg != nil {
 		cxCfg = &cfg.Codex
 	}
 	minRemaining := cxCfg.EffectiveQuotaCircuitBreakerMinRemaining()
-	remainingPct := math.Max(0, 100.0-usedPct)
-	log.Debugf("[CODEX-QUOTA] auth=%s used=%.1f%% remaining=%.1f%% minRemaining=%d%%", auth.ID, usedPct, remainingPct, minRemaining)
+	remainingPct = math.Max(0, 100.0-usedPct)
+	quotaDeltaPct = observeCodexAccountQuotaTelemetry(auth, usedPct, remainingPct, minRemaining, sessionID, model)
+	hasQuota = true
 	if minRemaining <= 0 || remainingPct >= float64(minRemaining) {
-		return
+		return usedPct, remainingPct, quotaDeltaPct, true
 	}
 	if _, already := codexTrippedBreakers.Load(auth.ID); already {
-		return
+		return usedPct, remainingPct, quotaDeltaPct, true
 	}
 
 	label := strings.TrimSpace(auth.Label)
@@ -436,4 +442,5 @@ func observeCodexQuotaCircuitBreaker(ctx context.Context, cfg *config.Config, au
 			}(authPath, auth)
 		}
 	}
+	return usedPct, remainingPct, quotaDeltaPct, true
 }
