@@ -111,6 +111,34 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		return e.executeOpenAIImage(ctx, auth, req, opts)
 	}
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
+	autocutActive := e.isMeteringBypassActive(ctx, auth, req, opts)
+	ctx = withCodexAutocutActive(ctx, autocutActive)
+	var autocutSessionID string
+	if autocutActive {
+		baseModel = e.clampSolBaseModel(baseModel)
+		if errCB := checkCodexCircuitBreakerTripped(auth); errCB != nil {
+			return resp, errCB
+		}
+		if localResp, handled := e.handleLocalTitleGenExecute(ctx, req, opts, baseModel); handled {
+			return localResp, nil
+		}
+		maxConc := 2
+		if e.cfg != nil {
+			maxConc = e.cfg.Codex.EffectiveMaxConcurrentRequests()
+		}
+		releaseSlot, errSem := globalCodexSemaphore.Acquire(ctx, maxConc)
+		if errSem != nil {
+			return resp, errSem
+		}
+		defer releaseSlot("execute-done")
+		if errCB := checkCodexCircuitBreakerTripped(auth); errCB != nil {
+			return resp, errCB
+		}
+		autocutSessionID = resolveCodexAutocutSessionID(ctx, opts.SourceFormat, req, opts.Headers, auth)
+		if errGuard := checkCodexSessionGuard(autocutSessionID); errGuard != nil {
+			return resp, errGuard
+		}
+	}
 	isCompat, errExpand := e.expandCodexResponsesCompaction(auth, &req, &opts, baseModel)
 	if errExpand != nil {
 		return resp, statusErr{code: http.StatusBadRequest, msg: errExpand.Error()}
@@ -172,7 +200,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	}
 	if !useSIWC {
 		normalizeCodexInstructionsDoc(doc, helps.IsNativeCodexRequest(req.Payload, opts))
-		if !isCompactionSummary && (e.cfg == nil || e.cfg.DisableImageGeneration == config.DisableImageGenerationOff) {
+		if !isCompactionSummary && (!autocutActive || payloadExplicitlyDeclaresImageGen(req.Payload)) && (e.cfg == nil || e.cfg.DisableImageGeneration == config.DisableImageGenerationOff) {
 			checkModel := req.Model
 			if strings.TrimSpace(checkModel) == "" {
 				checkModel = baseModel
@@ -193,6 +221,12 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		return resp, errReplay
 	}
 	sanitizeOpenAIResponsesReasoningEncryptedContentWithCompatModelAndBaseURLDoc(ctx, "codex executor", doc, isCompat, targetModel, baseURL)
+
+	var estInputTokens int
+	var finalizeMode bool
+	if autocutActive {
+		estInputTokens, finalizeMode = e.applyMeteringBypassToDoc(ctx, doc, baseModel, autocutSessionID, opts.Headers)
+	}
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
 	httpReq, upstreamBody, err := e.cacheHelperDoc(ctx, from, url, req, doc, auth, opts.Headers)
@@ -232,9 +266,14 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		AuthType:  authType,
 		AuthValue: authValue,
 	})
-	httpClient := helps.NewUtlsHTTPClient(ctx, e.cfg, auth, 0)
-	httpClient = reporter.TrackHTTPClient(httpClient)
-	httpResp, err := doCodexRequest(httpClient, httpReq, upstreamBody, prepareHeaders, nil)
+	var httpResp *http.Response
+	if autocutActive {
+		httpResp, err = e.executeViaInProcessGoSidecar(ctx, auth, httpReq, upstreamBody, prepareHeaders, upstreamModel, autocutSessionID, finalizeMode, estInputTokens, reporter, false)
+	} else {
+		httpClient := helps.NewUtlsHTTPClient(ctx, e.cfg, auth, 0)
+		httpClient = reporter.TrackHTTPClient(httpClient)
+		httpResp, err = doCodexRequest(httpClient, httpReq, upstreamBody, prepareHeaders, nil)
+	}
 	if err != nil {
 		helps.RecordAPIResponseError(ctx, e.cfg, err)
 		return resp, err

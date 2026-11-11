@@ -1,0 +1,486 @@
+package executor
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"os"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/MoeForge/moego/ojson"
+	"github.com/google/uuid"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/client/grokbuild"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
+	log "github.com/sirupsen/logrus"
+)
+
+type codexAutocutActiveCtxKey struct{}
+
+func withCodexAutocutActive(ctx context.Context, active bool) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, codexAutocutActiveCtxKey{}, active)
+}
+
+func isCodexAutocutActiveFromContext(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	v, _ := ctx.Value(codexAutocutActiveCtxKey{}).(bool)
+	return v
+}
+
+func (e *CodexExecutor) isMeteringBypassActive(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) bool {
+	if opts.Alt == "responses/compact" || isCodexOpenAIImageRequest(opts) || codexCompactionSummaryFromContext(ctx) {
+		return false
+	}
+	if opts.Headers != nil && strings.TrimSpace(opts.Headers.Get(CodexInternalCompactionHeader)) != "" {
+		return false
+	}
+	if auth != nil && len(auth.Attributes) > 0 {
+		if raw := strings.TrimSpace(auth.Attributes["metering_bypass"]); raw != "" {
+			if parsed, err := strconv.ParseBool(raw); err == nil {
+				return parsed
+			}
+		}
+	}
+	return e != nil && e.cfg != nil && e.cfg.Codex.MeteringBypassEnabled()
+}
+
+func (e *CodexExecutor) clampSolBaseModel(baseModel string) string {
+	if e != nil && e.cfg != nil && !e.cfg.Codex.EffectiveAllowSolModel() {
+		if strings.Contains(baseModel, "-sol") && !strings.Contains(baseModel, "-image") {
+			return "gpt-6-astra"
+		}
+	}
+	return baseModel
+}
+
+func payloadExplicitlyDeclaresImageGen(payload []byte) bool {
+	if len(payload) == 0 || !bytes.Contains(payload, []byte("image_gen")) {
+		return false
+	}
+	tools := ojson.GetBytesNoCopy(payload, "tools")
+	if !tools.IsArray() {
+		return false
+	}
+	for _, t := range tools.Array() {
+		if t.Get("type").String() == "image_generation" || isImageGenerationFunctionTool(t) {
+			return true
+		}
+	}
+	return false
+}
+
+func resolveCodexAutocutSessionID(ctx context.Context, from sdktranslator.Format, req cliproxyexecutor.Request, headers http.Header, auth *cliproxyauth.Auth) string {
+	if pck := strings.TrimSpace(ojson.GetBytesNoCopy(req.Payload, "prompt_cache_key").String()); pck != "" {
+		return strings.Clone(pck)
+	}
+	if headers != nil {
+		for _, k := range []string{"Session-Id", "session_id", "X-Session-Id", "Thread-Id"} {
+			if v := strings.TrimSpace(headers.Get(k)); v != "" {
+				return v
+			}
+		}
+	}
+	if sid := helps.ProviderSessionUUID("codex", req.Metadata); sid != "" {
+		return sid
+	}
+	if sourceFormatEqual(from, sdktranslator.FormatClaude) {
+		modelName := thinking.ParseSuffix(req.Model).ModelName
+		if cached, ok, err := helps.ClaudeCodePromptCache(ctx, modelName, req.Payload, headers); err == nil && ok && cached.ID != "" {
+			return cached.ID
+		}
+	}
+	if apiKey := strings.TrimSpace(helps.APIKeyFromContext(ctx)); apiKey != "" {
+		return uuid.NewSHA1(uuid.NameSpaceOID, []byte("cli-proxy-api:codex:prompt-cache:"+apiKey)).String()
+	}
+	if auth != nil && strings.TrimSpace(auth.ID) != "" {
+		return "codex-auth-" + strings.TrimSpace(auth.ID)
+	}
+	return "codex-default"
+}
+
+func (e *CodexExecutor) handleLocalTitleGenExecute(ctx context.Context, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, baseModel string) (cliproxyexecutor.Response, bool) {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("CODEX_TITLEGEN_LOCAL")), "off") {
+		return cliproxyexecutor.Response{}, false
+	}
+	title, ok := detectCodexTitleGenRequest(req.Payload)
+	if !ok {
+		return cliproxyexecutor.Response{}, false
+	}
+	log.Debugf("[TITLEGEN-LOCAL] intercepted non-stream | title=%q model=%s", title, baseModel)
+	to := sdktranslator.FromString("codex")
+	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
+	originalPayload := req.Payload
+	if len(opts.OriginalRequest) > 0 {
+		originalPayload = opts.OriginalRequest
+	}
+	completedData := buildLocalCodexTitleCompletedJSON(title, baseModel)
+	var param any
+	out := sdktranslator.TranslateNonStream(ctx, to, responseFormat, req.Model, originalPayload, req.Payload, completedData, &param)
+	if responseFormat == sdktranslator.FormatOpenAIResponse {
+		out = helps.EnsureResponsesUsageDetails(out)
+	}
+	return cliproxyexecutor.Response{
+		Payload: out,
+		Headers: http.Header{"Content-Type": []string{"application/json"}},
+	}, true
+}
+
+func (e *CodexExecutor) handleLocalTitleGenStream(ctx context.Context, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, baseModel string) (*cliproxyexecutor.StreamResult, bool) {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("CODEX_TITLEGEN_LOCAL")), "off") {
+		return nil, false
+	}
+	title, ok := detectCodexTitleGenRequest(req.Payload)
+	if !ok {
+		return nil, false
+	}
+	log.Debugf("[TITLEGEN-LOCAL] intercepted stream | title=%q model=%s", title, baseModel)
+	from := opts.SourceFormat
+	to := sdktranslator.FromString("codex")
+	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
+	originalPayload := req.Payload
+	if len(opts.OriginalRequest) > 0 {
+		originalPayload = opts.OriginalRequest
+	}
+	isGrokClient := grokbuild.IsGrokClientContext(ctx, opts.Headers)
+	sseBytes := buildLocalCodexTitleSSE(title, baseModel)
+	scanner := helps.NewCodexSSEScanner(ctx, bytes.NewReader(sseBytes), len(sseBytes)+1024)
+	claudeTokens := helps.NewClaudeInputTokenState(from, to, responseFormat, originalPayload)
+	var param any
+	var allChunks [][]byte
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		var translatedLine []byte
+		if transformed, ok := grokbuild.TransformKeepaliveSSELine(line, isGrokClient); ok {
+			translatedLine = transformed
+		} else if bytes.HasPrefix(line, dataTag) {
+			data := bytes.TrimSpace(line[5:])
+			translatedLine = append([]byte("data: "), data...)
+		} else {
+			translatedLine = bytes.Clone(line)
+		}
+		chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, originalPayload, req.Payload, translatedLine, &param, claudeTokens)
+		allChunks = append(allChunks, chunks...)
+	}
+	out := make(chan cliproxyexecutor.StreamChunk, len(allChunks))
+	for _, c := range allChunks {
+		out <- cliproxyexecutor.StreamChunk{Payload: c}
+	}
+	close(out)
+	return &cliproxyexecutor.StreamResult{
+		Headers: http.Header{"Content-Type": []string{"text/event-stream"}},
+		Chunks:  out,
+	}, true
+}
+
+// applyMeteringBypassToDoc executes server-side Autocompact, 250k Hard Input Cap,
+// Toolpad/Finalize injection, and :9gl-med model/effort/service_tier clamps on doc.
+// Returns the post-compaction estimated input tokens and whether finalizeMode is active.
+func (e *CodexExecutor) applyMeteringBypassToDoc(ctx context.Context, doc *ojson.Doc, baseModel, sessionID string, headers http.Header) (estInputTokens int, finalizeMode bool) {
+	if doc == nil || e == nil || e.cfg == nil {
+		return 0, false
+	}
+	raw := doc.Bytes()
+	var bodyMap map[string]any
+	if err := json.Unmarshal(raw, &bodyMap); err != nil || bodyMap == nil {
+		return 0, false
+	}
+
+	cxCfg := &e.cfg.Codex
+	finalizeMode = cxCfg.AutocutFinalizeEnabled()
+	responsesLite := isCodexResponsesLiteRequestDoc(doc, headers)
+
+	// Layers 3-6: Autocompact (Pass 0 keepRecent=0 + Pass 1 LRU + Pass 2 external chain) + 250k Hard Cap
+	maybeCodexAutocompactMap(ctx, e.cfg, bodyMap, sessionID)
+	enforceCodexInputHardCapMap(e.cfg, bodyMap)
+	estInputTokens = estimateCodexTokensOf(bodyMap)
+
+	// Layers 1-2: Toolpad + Forced Finalize (__finalize_9f3) + Trailing Developer Reminders
+	injectCodexMeteringBypassMap(bodyMap, CodexInjectOptions{
+		ResponsesLite: responsesLite,
+		Model:         baseModel,
+		Reinforcement: cxCfg.EffectiveAutocutReinforcement(),
+		SessionKey:    sessionID,
+		FinalizeMode:  finalizeMode,
+		MaxToolChars:  cxCfg.EffectiveAutocutMaxToolChars(),
+	})
+
+	// :9gl-med Clamps (-sol -> gpt-6-astra, reasoning.effort -> medium, service_tier -> priority)
+	applyCodexMeteringClampsMap(bodyMap, e.cfg, responsesLite)
+
+	if sessionID != "" {
+		if existingKey, _ := bodyMap["prompt_cache_key"].(string); strings.TrimSpace(existingKey) == "" {
+			bodyMap["prompt_cache_key"] = sessionID
+		}
+	}
+
+	mutated, err := json.Marshal(bodyMap)
+	if err != nil {
+		return estInputTokens, finalizeMode
+	}
+	*doc = *ojson.NewDoc(mutated)
+	return estInputTokens, finalizeMode
+}
+
+// enforceMeteringClampsPostFinalizeDoc ensures user payload rules in FinalizePayloadDoc
+// cannot accidentally re-enable high/xhigh reasoning effort or strip service_tier="priority".
+func (e *CodexExecutor) enforceMeteringClampsPostFinalizeDoc(doc *ojson.Doc) {
+	if doc == nil || e == nil || e.cfg == nil {
+		return
+	}
+	cxCfg := &e.cfg.Codex
+	if !cxCfg.EffectiveAllowHighEffort() {
+		if eff := strings.ToLower(strings.TrimSpace(doc.Get("reasoning.effort").String())); eff == "high" || eff == "xhigh" || eff == "max" || eff == "ultra" {
+			_ = doc.Set("reasoning.effort", "medium")
+		}
+		if eff := strings.ToLower(strings.TrimSpace(doc.Get("effort").String())); eff == "high" || eff == "xhigh" || eff == "max" || eff == "ultra" {
+			_ = doc.Set("effort", "medium")
+		}
+	}
+	if !cxCfg.EffectiveAllowSolModel() {
+		if m := strings.TrimSpace(doc.Get("model").String()); strings.Contains(m, "-sol") && !strings.Contains(m, "-image") {
+			_ = doc.Set("model", "gpt-6-astra")
+		}
+	}
+	helps.SetStringIfDifferentDoc(doc, "service_tier", "priority")
+	_ = doc.Delete("max_output_tokens")
+}
+
+type codexAutocutReadCloser struct {
+	pr           *io.PipeReader
+	rawBody      io.ReadCloser
+	tracker      *codexTCPConnTracker
+	transport    *http.Transport
+	stopCtxReset func() bool
+	closeOnce    sync.Once
+}
+
+func (r *codexAutocutReadCloser) Read(p []byte) (int, error) {
+	if r.pr != nil {
+		return r.pr.Read(p)
+	}
+	if r.rawBody != nil {
+		return r.rawBody.Read(p)
+	}
+	return 0, io.EOF
+}
+
+func (r *codexAutocutReadCloser) Close() error {
+	var closeErr error
+	r.closeOnce.Do(func() {
+		if r.stopCtxReset != nil {
+			r.stopCtxReset()
+		}
+		if r.tracker != nil {
+			r.tracker.hardResetAll()
+		}
+		if r.pr != nil {
+			_ = r.pr.Close()
+		}
+		if r.rawBody != nil {
+			closeErr = r.rawBody.Close()
+		}
+		if r.transport != nil {
+			r.transport.CloseIdleConnections()
+		}
+	})
+	return closeErr
+}
+
+var codexSidecarRetryDelay = 2000 * time.Millisecond
+
+func isCodexSidecarRetryableStatus(status int) bool {
+	return status == http.StatusInternalServerError ||
+		status == http.StatusBadGateway ||
+		status == http.StatusServiceUnavailable ||
+		status == http.StatusGatewayTimeout
+}
+
+// executeViaInProcessGoSidecar runs the exact 9router Go Sidecar data-plane natively in-process:
+//   - Dedicated 1-to-1 HTTP/1.1 TLS socket (TLSNextProto empty map, ForceAttemptHTTP2=false, DisableKeepAlives=true)
+//   - Native CLIProxyAPI Codex OAuth credentials & headers (Authorization Bearer, Chatgpt-Account-Id, Originator)
+//   - In-place retry up to 2 attempts on 5xx or non-accountFallback 200-OK SSE transient overloads
+//   - Immediate conductor multi-account failover on "selected model is at capacity" / model_at_capacity
+//   - 5h Quota Circuit Breaker observation + StreamWithAutocut with SetLinger(0) kernel TCP RST
+func (e *CodexExecutor) executeViaInProcessGoSidecar(
+	ctx context.Context,
+	auth *cliproxyauth.Auth,
+	baseReq *http.Request,
+	upstreamBody []byte,
+	prepareHeaders func(*http.Request),
+	upstreamModel string,
+	sessionID string,
+	finalizeMode bool,
+	estInputTokens int,
+	reporter *helps.UsageReporter,
+	streamMode bool,
+) (*http.Response, error) {
+	wireBody := upstreamBody
+	if baseReq != nil && baseReq.GetBody != nil {
+		if rc, errGet := baseReq.GetBody(); errGet == nil && rc != nil {
+			if b, errRead := io.ReadAll(rc); errRead == nil && len(b) > 0 {
+				wireBody = b
+			}
+			_ = rc.Close()
+		}
+	}
+
+	const maxRetries = 2
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if errCtx := ctx.Err(); errCtx != nil {
+			return nil, errCtx
+		}
+
+		httpClient, transport, tracker := newCodexAutocutHTTPClient(e.cfg, auth, "")
+		if reporter != nil {
+			if streamMode {
+				httpClient = reporter.TrackHTTPClientRoundTripOnly(httpClient)
+			} else {
+				httpClient = reporter.TrackHTTPClient(httpClient)
+			}
+		}
+
+		attemptReq, errNew := http.NewRequestWithContext(ctx, baseReq.Method, baseReq.URL.String(), bytes.NewReader(wireBody))
+		if errNew != nil {
+			transport.CloseIdleConnections()
+			return nil, errNew
+		}
+		attemptReq.Header = baseReq.Header.Clone()
+		prepareSidecarHeaders := func(r *http.Request) {
+			if prepareHeaders != nil {
+				prepareHeaders(r)
+			}
+			// Force identity encoding and 1-to-1 connection isolation for instant TCP RST.
+			r.Header.Set("Accept-Encoding", "identity")
+			r.Header.Set("Connection", "close")
+			r.Close = true
+		}
+		prepareSidecarHeaders(attemptReq)
+
+		stopCtxReset := context.AfterFunc(ctx, func() {
+			tracker.hardResetAll()
+		})
+
+		httpResp, errDo := doCodexRequest(httpClient, attemptReq, upstreamBody, prepareSidecarHeaders, nil)
+		if errDo != nil {
+			stopCtxReset()
+			tracker.hardResetAll()
+			transport.CloseIdleConnections()
+			if attempt < maxRetries && ctx.Err() == nil {
+				log.Warnf("[GO-SIDECAR] upstream network error (%v) -> retrying attempt %d/%d", errDo, attempt+1, maxRetries)
+				select {
+				case <-time.After(codexSidecarRetryDelay):
+					continue
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+			}
+			return nil, errDo
+		}
+
+		observeCodexQuotaCircuitBreaker(ctx, e.cfg, auth, httpResp.Header)
+
+		if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
+			if isCodexSidecarRetryableStatus(httpResp.StatusCode) && attempt < maxRetries && ctx.Err() == nil {
+				stopCtxReset()
+				_, _ = io.Copy(io.Discard, io.LimitReader(httpResp.Body, 4096))
+				_ = httpResp.Body.Close()
+				tracker.hardResetAll()
+				transport.CloseIdleConnections()
+				log.Warnf("[GO-SIDECAR] HTTP %d -> retrying attempt %d/%d", httpResp.StatusCode, attempt+1, maxRetries)
+				select {
+				case <-time.After(codexSidecarRetryDelay):
+					continue
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+			}
+			// Hand non-retryable or final status error back to CodexExecutor's status handler,
+			// ensuring tracker/transport still clean up when httpResp.Body is closed.
+			rawErrBody := httpResp.Body
+			httpResp.Body = &codexAutocutReadCloser{
+				pr:           nil,
+				rawBody:      rawErrBody,
+				tracker:      tracker,
+				transport:    transport,
+				stopCtxReset: stopCtxReset,
+			}
+			return httpResp, nil
+		}
+
+		rawBody := httpResp.Body
+		peek := peekCodexSSETransientError(rawBody)
+		if peek.matched != "" {
+			stopCtxReset()
+			tracker.hardResetAll()
+			_ = rawBody.Close()
+			transport.CloseIdleConnections()
+
+			if !peek.accountFallback && attempt < maxRetries && ctx.Err() == nil {
+				log.Warnf("[GO-SIDECAR] 200-OK SSE transient error (%s: %s) -> retrying attempt %d/%d", peek.matched, peek.message, attempt+1, maxRetries)
+				select {
+				case <-time.After(codexSidecarRetryDelay):
+					continue
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+			}
+
+			errPayload, _ := json.Marshal(map[string]any{
+				"error": map[string]any{
+					"message": peek.message,
+					"type":    "server_error",
+					"code":    "service_unavailable",
+				},
+			})
+			log.Warnf("[GO-SIDECAR] 200-OK SSE capacity/overload (%s: %s, accountFallback=%v) -> failing over account", peek.matched, peek.message, peek.accountFallback)
+			return nil, newCodexBootstrapOverloadErr(errPayload)
+		}
+
+		hardArgCap := DefaultHardArgCap
+		if e != nil && e.cfg != nil {
+			hardArgCap = e.cfg.Codex.EffectiveAutocutHardArgCap()
+		}
+
+		combinedUpstream := io.MultiReader(bytes.NewReader(peek.prefixBytes), rawBody)
+		pr, pw := io.Pipe()
+		go func() {
+			_ = StreamWithAutocut(combinedUpstream, pw, nil, CodexAutocutOptions{
+				Model:               upstreamModel,
+				SessionID:           sessionID,
+				FinalizeMode:        finalizeMode,
+				HardArgCap:          hardArgCap,
+				PostcallAbortMin:    5000,
+				EstimateInputTokens: estInputTokens,
+				OnAbortUpstream: func(how string) {
+					tracker.hardResetAll()
+					_ = rawBody.Close()
+				},
+			})
+			_ = pw.Close()
+		}()
+
+		httpResp.Body = &codexAutocutReadCloser{
+			pr:           pr,
+			rawBody:      rawBody,
+			tracker:      tracker,
+			transport:    transport,
+			stopCtxReset: stopCtxReset,
+		}
+		return httpResp, nil
+	}
+
+	return nil, statusErr{code: http.StatusBadGateway, msg: "go-sidecar retry loop exhausted"}
+}

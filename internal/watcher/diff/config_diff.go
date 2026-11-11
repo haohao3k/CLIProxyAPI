@@ -152,6 +152,12 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.Codex.StreamBootstrapBuffering != newCfg.Codex.StreamBootstrapBuffering {
 		changes = append(changes, fmt.Sprintf("codex.stream-bootstrap-buffering: %t -> %t", oldCfg.Codex.StreamBootstrapBuffering, newCfg.Codex.StreamBootstrapBuffering))
 	}
+	if oldCfg.Codex.MeteringBypassEnabled() != newCfg.Codex.MeteringBypassEnabled() {
+		changes = append(changes, fmt.Sprintf("codex.metering-bypass: %t -> %t", oldCfg.Codex.MeteringBypassEnabled(), newCfg.Codex.MeteringBypassEnabled()))
+	}
+	if oldCfg.Codex.AutocutFinalizeEnabled() != newCfg.Codex.AutocutFinalizeEnabled() {
+		changes = append(changes, fmt.Sprintf("codex.autocut-finalize: %t -> %t", oldCfg.Codex.AutocutFinalizeEnabled(), newCfg.Codex.AutocutFinalizeEnabled()))
+	}
 	if strings.TrimSpace(oldCfg.Codex.StreamBootstrapTimeout) != strings.TrimSpace(newCfg.Codex.StreamBootstrapTimeout) {
 		changes = append(changes, fmt.Sprintf("codex.stream-bootstrap-timeout: %s -> %s", strings.TrimSpace(oldCfg.Codex.StreamBootstrapTimeout), strings.TrimSpace(newCfg.Codex.StreamBootstrapTimeout)))
 	}

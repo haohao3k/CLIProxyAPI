@@ -47,6 +47,9 @@ func effectiveSDKConfig(cfg *config.Config) *config.SDKConfig {
 	sdkCfg := cfg.SDKConfig
 	sdkCfg.CodexOrphanDelegationCompatibility = cfg.Codex.OrphanDelegationCompatibility
 	sdkCfg.CodexResponseSteering = cfg.Codex.ResponseSteering
+	compactHijack := cfg.Codex.CompactHijackEnabled()
+	sdkCfg.CodexCompactHijack = &compactHijack
+	sdkCfg.CodexCompactHijackModel = cfg.Codex.EffectiveAutocompactExternalModel()
 	if cfg.CommercialMode {
 		sdkCfg.RequestLog = false
 	}

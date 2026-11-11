@@ -138,6 +138,10 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PATCH("/combos", s.mgmt.PatchCombo)
 		mgmt.DELETE("/combos", s.mgmt.DeleteCombo)
 
+		mgmt.GET("/codex-metering-bypass", s.mgmt.GetCodexMeteringBypass)
+		mgmt.PUT("/codex-metering-bypass", s.mgmt.PutCodexMeteringBypass)
+		mgmt.PATCH("/codex-metering-bypass", s.mgmt.PutCodexMeteringBypass)
+
 		mgmt.GET("/claude-api-key", s.mgmt.GetClaudeKeys)
 		mgmt.PUT("/claude-api-key", s.mgmt.PutClaudeKeys)
 		mgmt.PATCH("/claude-api-key", s.mgmt.PatchClaudeKey)

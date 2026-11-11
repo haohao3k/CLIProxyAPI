@@ -32,6 +32,41 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		return e.executeOpenAIImageStream(ctx, auth, req, opts)
 	}
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
+	autocutActive := e.isMeteringBypassActive(ctx, auth, req, opts)
+	ctx = withCodexAutocutActive(ctx, autocutActive)
+	var autocutSessionID string
+	var releaseAutocutSlot func(string)
+	autocutSlotTransferred := false
+	if autocutActive {
+		baseModel = e.clampSolBaseModel(baseModel)
+		if errCB := checkCodexCircuitBreakerTripped(auth); errCB != nil {
+			return nil, errCB
+		}
+		if localStream, handled := e.handleLocalTitleGenStream(ctx, req, opts, baseModel); handled {
+			return localStream, nil
+		}
+		maxConc := 2
+		if e.cfg != nil {
+			maxConc = e.cfg.Codex.EffectiveMaxConcurrentRequests()
+		}
+		var errSem error
+		releaseAutocutSlot, errSem = globalCodexSemaphore.Acquire(ctx, maxConc)
+		if errSem != nil {
+			return nil, errSem
+		}
+		defer func() {
+			if !autocutSlotTransferred && releaseAutocutSlot != nil {
+				releaseAutocutSlot("stream-early-exit")
+			}
+		}()
+		if errCB := checkCodexCircuitBreakerTripped(auth); errCB != nil {
+			return nil, errCB
+		}
+		autocutSessionID = resolveCodexAutocutSessionID(ctx, opts.SourceFormat, req, opts.Headers, auth)
+		if errGuard := checkCodexSessionGuard(autocutSessionID); errGuard != nil {
+			return nil, errGuard
+		}
+	}
 	isCompat, errExpand := e.expandCodexResponsesCompaction(auth, &req, &opts, baseModel)
 	if errExpand != nil {
 		return nil, statusErr{code: http.StatusBadRequest, msg: errExpand.Error()}
@@ -100,7 +135,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	ensureWebSearchToolForHistoryDoc(doc, opts.Headers)
 	if !useSIWC {
 		normalizeCodexInstructionsDoc(doc, preserveNativeOutput)
-		if e.cfg == nil || e.cfg.DisableImageGeneration == config.DisableImageGenerationOff {
+		if (!autocutActive || payloadExplicitlyDeclaresImageGen(req.Payload)) && (e.cfg == nil || e.cfg.DisableImageGeneration == config.DisableImageGenerationOff) {
 			checkModel := req.Model
 			if strings.TrimSpace(checkModel) == "" {
 				checkModel = baseModel
@@ -121,6 +156,12 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		return nil, errReplay
 	}
 	sanitizeOpenAIResponsesReasoningEncryptedContentWithCompatModelAndBaseURLDoc(ctx, "codex executor", doc, isCompat, targetModel, baseURL)
+
+	var estInputTokens int
+	var finalizeMode bool
+	if autocutActive {
+		estInputTokens, finalizeMode = e.applyMeteringBypassToDoc(ctx, doc, baseModel, autocutSessionID, opts.Headers)
+	}
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
 	httpReq, upstreamBody, err := e.cacheHelperDoc(ctx, from, url, req, doc, auth, opts.Headers)
@@ -161,9 +202,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		AuthValue: authValue,
 	})
 
-	httpClient := helps.NewUtlsHTTPClient(ctx, e.cfg, auth, 0)
-	httpClient = reporter.TrackHTTPClientRoundTripOnly(httpClient)
-	buffering := e.cfg != nil && e.cfg.Codex.StreamBootstrapBuffering
+	buffering := !autocutActive && e.cfg != nil && e.cfg.Codex.StreamBootstrapBuffering
 	var bootstrapTimeout time.Duration
 	var bootstrapStart time.Time
 	if buffering {
@@ -175,7 +214,14 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			bootstrapStart = nowCodexBootstrap()
 		}
 	}
-	httpResp, err := doCodexRequest(httpClient, httpReq, upstreamBody, prepareHeaders, responseReady)
+	var httpResp *http.Response
+	if autocutActive {
+		httpResp, err = e.executeViaInProcessGoSidecar(ctx, auth, httpReq, upstreamBody, prepareHeaders, upstreamModel, autocutSessionID, finalizeMode, estInputTokens, reporter, true)
+	} else {
+		httpClient := helps.NewUtlsHTTPClient(ctx, e.cfg, auth, 0)
+		httpClient = reporter.TrackHTTPClientRoundTripOnly(httpClient)
+		httpResp, err = doCodexRequest(httpClient, httpReq, upstreamBody, prepareHeaders, responseReady)
+	}
 	if err != nil {
 		helps.RecordAPIResponseError(ctx, e.cfg, err)
 		return nil, err
@@ -452,7 +498,11 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			emittedCount++
 		}
 	}
+	autocutSlotTransferred = true
 	go func() {
+		if releaseAutocutSlot != nil {
+			defer releaseAutocutSlot("stream-done")
+		}
 		defer close(out)
 		defer func() {
 			if errClose := httpResp.Body.Close(); errClose != nil {

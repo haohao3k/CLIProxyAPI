@@ -192,6 +192,10 @@ func (e *CodexExecutor) cacheHelperDoc(ctx context.Context, from sdktranslator.F
 	}
 	helps.SanitizeCodexInputItemIDsDoc(doc)
 	helps.FinalizePayloadDoc(ctx, doc)
+	autocutActive := isCodexAutocutActiveFromContext(ctx)
+	if autocutActive {
+		e.enforceMeteringClampsPostFinalizeDoc(doc)
+	}
 	var rawJSON []byte
 	if doc != nil {
 		rawJSON = doc.Bytes()
@@ -221,7 +225,9 @@ func (e *CodexExecutor) cacheHelperDoc(ctx context.Context, from sdktranslator.F
 		httpReq.Header.Set("Content-Encoding", "zstd")
 	}
 	alignCodexContentEncoding(httpReq)
-	if httpReq.Header.Get("Accept-Encoding") == "" {
+	if autocutActive {
+		httpReq.Header.Set("Accept-Encoding", "identity")
+	} else if httpReq.Header.Get("Accept-Encoding") == "" {
 		httpReq.Header.Set("Accept-Encoding", "gzip, deflate, br, zstd")
 	}
 	if cache.ID != "" {

@@ -329,6 +329,38 @@ type CodexConfig struct {
 	// for Codex Sign in with ChatGPT (SIWC) OAuth authorization and API requests.
 	// Defaults to "CLIProxyAPI".
 	SignInWithChatGPTIdentifier string `yaml:"signin-with-chatgpt-identifier,omitempty" json:"signin-with-chatgpt-identifier,omitempty"`
+	// MeteringBypass enables the :9gl-med Codex stream metering bypass (toolpad/argpad/sentinel autocut).
+	MeteringBypass *bool `yaml:"metering-bypass,omitempty" json:"metering-bypass,omitempty"`
+	// AutocutFinalize enables the __finalize_9f3 forced-finalize layer so plain-text answers also cut free (default true when MeteringBypass is enabled).
+	AutocutFinalize *bool `yaml:"autocut-finalize,omitempty" json:"autocut-finalize,omitempty"`
+	// AutocutReinforcement controls trailing developer reminder injection: "always" (default), "adaptive", or "off".
+	AutocutReinforcement string `yaml:"autocut-reinforcement,omitempty" json:"autocut-reinforcement,omitempty"`
+	// AutocutMaxToolChars sets the per-tool-call argument size ceiling taught in prompts (default 8000 — Iron Rule #2).
+	AutocutMaxToolChars int `yaml:"autocut-max-tool-chars,omitempty" json:"autocut-max-tool-chars,omitempty"`
+	// AutocutHardArgCap sets the server-side hard argument cap that proactively aborts and closes JSON (default 8000 — Iron Rule #2).
+	AutocutHardArgCap int `yaml:"autocut-hard-arg-cap,omitempty" json:"autocut-hard-arg-cap,omitempty"`
+	// MaxConcurrentRequests limits active concurrent upstream Codex streams when MeteringBypass is enabled (default 2).
+	MaxConcurrentRequests int `yaml:"max-concurrent-requests,omitempty" json:"max-concurrent-requests,omitempty"`
+	// QuotaCircuitBreakerMinRemaining auto-disables a Codex credential when 5h remaining quota drops below this % (default 30, <=0 disables).
+	QuotaCircuitBreakerMinRemaining *int `yaml:"quota-circuit-breaker-min-remaining,omitempty" json:"quota-circuit-breaker-min-remaining,omitempty"`
+	// AutocompactEnabled enables server-side context compaction via cheap external models (default true when MeteringBypass is enabled).
+	AutocompactEnabled *bool `yaml:"autocompact-enabled,omitempty" json:"autocompact-enabled,omitempty"`
+	// AutocompactThreshold sets estimated input tokens triggering server-side compaction (default 150000).
+	AutocompactThreshold int `yaml:"autocompact-threshold,omitempty" json:"autocompact-threshold,omitempty"`
+	// AutocompactKeepTokens sets the verbatim tail token budget kept during compaction (default 40000).
+	AutocompactKeepTokens int `yaml:"autocompact-keep-tokens,omitempty" json:"autocompact-keep-tokens,omitempty"`
+	// AutocompactHardCapTokens sets the last-line window-trim token ceiling for tool-carrying requests (default 250000).
+	AutocompactHardCapTokens *int `yaml:"autocompact-hard-cap-tokens,omitempty" json:"autocompact-hard-cap-tokens,omitempty"`
+	// AutocompactExternalModel sets the primary cheap summarizer model/combo on CPA (default "deepseek-v4.1-flash").
+	AutocompactExternalModel string `yaml:"autocompact-external-model,omitempty" json:"autocompact-external-model,omitempty"`
+	// AutocompactExternalModels sets comma-separated fallback summarizer models/combos (default "glm-5.3-flash").
+	AutocompactExternalModels string `yaml:"autocompact-external-models,omitempty" json:"autocompact-external-models,omitempty"`
+	// CompactHijack reroutes client /compact summarization requests targeting Codex to AutocompactExternalModel (default true when MeteringBypass is enabled).
+	CompactHijack *bool `yaml:"compact-hijack,omitempty" json:"compact-hijack,omitempty"`
+	// AllowHighEffort disables clamping high/xhigh/max/ultra reasoning effort to medium when MeteringBypass is enabled.
+	AllowHighEffort bool `yaml:"allow-high-effort,omitempty" json:"allow-high-effort,omitempty"`
+	// AllowSolModel disables clamping -sol models to gpt-6-astra when MeteringBypass is enabled.
+	AllowSolModel bool `yaml:"allow-sol-model,omitempty" json:"allow-sol-model,omitempty"`
 }
 
 // WebsocketCompressionEnabled reports whether WebSocket compression is enabled.
