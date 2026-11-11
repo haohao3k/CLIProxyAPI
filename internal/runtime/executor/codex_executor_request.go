@@ -168,7 +168,12 @@ func (e *CodexExecutor) cacheHelperDoc(ctx context.Context, from sdktranslator.F
 	} else if sourceFormatEqual(from, sdktranslator.FormatOpenAIResponse) {
 		promptCacheKey := ojson.GetBytesNoCopy(req.Payload, "prompt_cache_key")
 		if promptCacheKey.Exists() {
-			cache.ID = strings.Clone(promptCacheKey.String())
+			cache.ID = strings.Clone(strings.TrimSpace(promptCacheKey.String()))
+		}
+		if cache.ID == "" && doc != nil {
+			if docPCK := strings.TrimSpace(doc.Get("prompt_cache_key").String()); docPCK != "" {
+				cache.ID = strings.Clone(docPCK)
+			}
 		}
 	} else if sourceFormatEqual(from, sdktranslator.FormatOpenAI) {
 		if promptCacheKey := ojson.GetBytesNoCopy(req.Payload, "prompt_cache_key"); promptCacheKey.Exists() {
@@ -181,6 +186,11 @@ func (e *CodexExecutor) cacheHelperDoc(ctx context.Context, from sdktranslator.F
 			if apiKey := strings.TrimSpace(helps.APIKeyFromContext(ctx)); apiKey != "" {
 				cache.ID = uuid.NewSHA1(uuid.NameSpaceOID, []byte("cli-proxy-api:codex:prompt-cache:"+apiKey)).String()
 			}
+		}
+	}
+	if cache.ID == "" && doc != nil {
+		if docPCK := strings.TrimSpace(doc.Get("prompt_cache_key").String()); docPCK != "" {
+			cache.ID = strings.Clone(docPCK)
 		}
 	}
 	if cache.ID == "" {

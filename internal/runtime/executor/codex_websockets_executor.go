@@ -78,7 +78,10 @@ func (e *CodexAutoExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth
 	if e == nil || e.httpExec == nil || e.wsExec == nil {
 		return cliproxyexecutor.Response{}, fmt.Errorf("codex auto executor: executor is nil")
 	}
-	if e.httpExec.isMeteringBypassActive(ctx, auth, req, opts) && !cliproxyexecutor.RequiredUpstreamWebsocket(ctx) {
+	if e.httpExec.isMeteringBypassActive(ctx, auth, req, opts) {
+		if cliproxyexecutor.RequiredUpstreamWebsocket(ctx) {
+			return cliproxyexecutor.Response{}, cliproxyexecutor.NewUpstreamWebsocketReplayRequiredError()
+		}
 		return e.httpExec.Execute(ctx, auth, req, opts)
 	}
 	if cliproxyexecutor.DownstreamWebsocket(ctx) && codexWebsocketsEnabled(auth) {
@@ -94,7 +97,10 @@ func (e *CodexAutoExecutor) ExecuteStream(ctx context.Context, auth *cliproxyaut
 	if e == nil || e.httpExec == nil || e.wsExec == nil {
 		return nil, fmt.Errorf("codex auto executor: executor is nil")
 	}
-	if e.httpExec.isMeteringBypassActive(ctx, auth, req, opts) && !cliproxyexecutor.RequiredUpstreamWebsocket(ctx) {
+	if e.httpExec.isMeteringBypassActive(ctx, auth, req, opts) {
+		if cliproxyexecutor.RequiredUpstreamWebsocket(ctx) {
+			return nil, cliproxyexecutor.NewUpstreamWebsocketReplayRequiredError()
+		}
 		return e.httpExec.ExecuteStream(ctx, auth, req, opts)
 	}
 	if cliproxyexecutor.DownstreamWebsocket(ctx) && codexWebsocketsEnabled(auth) {

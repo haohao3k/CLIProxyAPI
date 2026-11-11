@@ -26,6 +26,7 @@ type codexMeteringBypassResponse struct {
 	CompactHijack                   bool   `json:"compact-hijack"`
 	AllowHighEffort                 bool   `json:"allow-high-effort"`
 	AllowSolModel                   bool   `json:"allow-sol-model"`
+	AllowChatCompletions            bool   `json:"allow-chat-completions"`
 }
 
 type codexMeteringBypassUpdate struct {
@@ -45,6 +46,7 @@ type codexMeteringBypassUpdate struct {
 	CompactHijack                   *bool   `json:"compact-hijack"`
 	AllowHighEffort                 *bool   `json:"allow-high-effort"`
 	AllowSolModel                   *bool   `json:"allow-sol-model"`
+	AllowChatCompletions            *bool   `json:"allow-chat-completions"`
 }
 
 // GetCodexMeteringBypass returns effective Codex metering-bypass settings (`GET /v0/management/codex-metering-bypass`).
@@ -73,6 +75,7 @@ func (h *Handler) GetCodexMeteringBypass(c *gin.Context) {
 		CompactHijack:                   cx.CompactHijack != nil && *cx.CompactHijack || cx.CompactHijack == nil,
 		AllowHighEffort:                 cx.EffectiveAllowHighEffort(),
 		AllowSolModel:                   cx.EffectiveAllowSolModel(),
+		AllowChatCompletions:            cx.EffectiveAllowChatCompletions(),
 	})
 }
 
@@ -164,6 +167,12 @@ func (h *Handler) PutCodexMeteringBypass(c *gin.Context) {
 	if body.AllowSolModel != nil {
 		cx.AllowSolModel = *body.AllowSolModel
 	}
+	if body.AllowChatCompletions != nil {
+		cx.AllowChatCompletions = *body.AllowChatCompletions
+	}
+	compactHijack := cx.CompactHijackEnabled()
+	h.cfg.SDKConfig.CodexCompactHijack = &compactHijack
+	h.cfg.SDKConfig.CodexCompactHijackModel = cx.EffectiveAutocompactExternalModel()
 
 	h.persistLocked(c)
 }

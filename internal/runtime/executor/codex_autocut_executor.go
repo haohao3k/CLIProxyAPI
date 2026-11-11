@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -82,18 +83,164 @@ func payloadExplicitlyDeclaresImageGen(payload []byte) bool {
 	return false
 }
 
+func (e *CodexExecutor) checkCodexResponsesOnlyFormat(from sdktranslator.Format, baseModel string) error {
+	if e != nil && e.cfg != nil && e.cfg.Codex.EffectiveAllowChatCompletions() {
+		return nil
+	}
+	if sourceFormatEqual(from, sdktranslator.FormatOpenAIResponse) || sourceFormatEqual(from, sdktranslator.FormatCodex) {
+		return nil
+	}
+	ep := strings.TrimSpace(from.String())
+	if ep == "" {
+		ep = "non-responses"
+	}
+	RecordCodexSpecialTelemetryEvent("rejected_non_responses")
+	log.Warnf("⚠️ [AC:REJECT-FORMAT] Rejected non-Responses request on %s for codex/%s (Responses API /v1/responses only)", ep, baseModel)
+	return statusErr{
+		code: http.StatusBadRequest,
+		msg:  fmt.Sprintf("Codex models under metering-bypass only support the Responses API (/v1/responses). Request via %s is disabled to prevent 0%% prompt-cache hits and quota leaks.", ep),
+	}
+}
+
+func extractResultItemText(item ojson.Result) string {
+	content := item.Get("content")
+	if content.Type == ojson.String {
+		return content.String()
+	}
+	if content.IsArray() {
+		var sb strings.Builder
+		for _, part := range content.Array() {
+			if part.Type == ojson.String {
+				sb.WriteString(part.String())
+			} else if txt := part.Get("text"); txt.Type == ojson.String && txt.String() != "" {
+				if sb.Len() > 0 {
+					sb.WriteByte(' ')
+				}
+				sb.WriteString(txt.String())
+			}
+		}
+		return sb.String()
+	}
+	return ""
+}
+
+func isWrapperOrCompactionUserText(text string) bool {
+	trimmed := strings.TrimLeft(text, " \t\r\n")
+	if trimmed == "" {
+		return true
+	}
+	for _, p := range codexWrapperUserPrefixes {
+		if strings.HasPrefix(trimmed, p) {
+			return true
+		}
+	}
+	return isOwnCompactionNote(trimmed)
+}
+
+func deriveCodexConversationSessionSeed(payload []byte) string {
+	if len(payload) == 0 {
+		return ""
+	}
+	itemsRes := ojson.GetBytesNoCopy(payload, "input")
+	if !itemsRes.IsArray() {
+		itemsRes = ojson.GetBytesNoCopy(payload, "messages")
+	}
+	if !itemsRes.IsArray() {
+		if inputStr := strings.TrimSpace(itemsRes.String()); inputStr != "" {
+			if len(inputStr) > 256 {
+				inputStr = inputStr[:256]
+			}
+			return "u1:" + inputStr
+		}
+		return ""
+	}
+
+	var firstRealUser string
+	var firstTurnAnchor string
+	var assistantAccum strings.Builder
+
+	for _, item := range itemsRes.Array() {
+		if !item.IsObject() {
+			continue
+		}
+		role := strings.TrimSpace(item.Get("role").String())
+		itType := strings.TrimSpace(item.Get("type").String())
+
+		if firstRealUser == "" && role == "user" && (itType == "" || itType == "message") {
+			txt := strings.TrimSpace(extractResultItemText(item))
+			if !isWrapperOrCompactionUserText(txt) {
+				firstRealUser = txt
+			}
+		}
+
+		if firstTurnAnchor == "" {
+			if itType == "function_call" || itType == "custom_tool_call" {
+				if cid := strings.TrimSpace(item.Get("call_id").String()); cid != "" {
+					firstTurnAnchor = "fc:" + cid
+				} else if id := strings.TrimSpace(item.Get("id").String()); id != "" {
+					firstTurnAnchor = "id:" + id
+				}
+			} else if role == "assistant" && (itType == "" || itType == "message") {
+				if id := strings.TrimSpace(item.Get("id").String()); id != "" {
+					firstTurnAnchor = "msg:" + id
+				} else if assistantAccum.Len() < 64 {
+					assistantAccum.WriteString(strings.TrimSpace(extractResultItemText(item)))
+					if assistantAccum.Len() >= 32 {
+						s := assistantAccum.String()
+						if len(s) > 64 {
+							s = s[:64]
+						}
+						firstTurnAnchor = "asst:" + s
+					}
+				}
+			}
+		}
+
+		if len(firstRealUser) >= 24 && firstTurnAnchor != "" {
+			break
+		}
+	}
+
+	if len(firstRealUser) >= 24 {
+		if len(firstRealUser) > 256 {
+			firstRealUser = firstRealUser[:256]
+		}
+		return "u1:" + firstRealUser
+	}
+	if firstTurnAnchor != "" {
+		if len(firstTurnAnchor) > 128 {
+			firstTurnAnchor = firstTurnAnchor[:128]
+		}
+		return "a2:" + firstTurnAnchor
+	}
+	if firstRealUser != "" {
+		return "u0:" + firstRealUser
+	}
+	return ""
+}
+
+func normalizeCandidateSessionID(raw string) string {
+	v := strings.TrimSpace(raw)
+	if v == "" || len(v) > 256 {
+		return ""
+	}
+	return strings.Clone(v)
+}
+
 func resolveCodexAutocutSessionID(ctx context.Context, from sdktranslator.Format, req cliproxyexecutor.Request, headers http.Header, auth *cliproxyauth.Auth) string {
-	if pck := strings.TrimSpace(ojson.GetBytesNoCopy(req.Payload, "prompt_cache_key").String()); pck != "" {
-		return strings.Clone(pck)
+	for _, field := range []string{"prompt_cache_key", "session_id", "conversation_id", "metadata.user_id"} {
+		if candidate := normalizeCandidateSessionID(ojson.GetBytesNoCopy(req.Payload, field).String()); candidate != "" {
+			return candidate
+		}
 	}
 	if headers != nil {
-		for _, k := range []string{"Session-Id", "session_id", "X-Session-Id", "Thread-Id"} {
-			if v := strings.TrimSpace(headers.Get(k)); v != "" {
-				return v
+		for _, k := range []string{"Session-Id", "session_id", "X-Session-Id", "Thread-Id", "X-Amp-Thread-Id", "X-Claude-Code-Session-Id", "X-Client-Request-Id"} {
+			if candidate := normalizeCandidateSessionID(headers.Get(k)); candidate != "" {
+				return candidate
 			}
 		}
 	}
-	if sid := helps.ProviderSessionUUID("codex", req.Metadata); sid != "" {
+	if sid := normalizeCandidateSessionID(helps.ProviderSessionUUID("codex", req.Metadata)); sid != "" {
 		return sid
 	}
 	if sourceFormatEqual(from, sdktranslator.FormatClaude) {
@@ -102,11 +249,15 @@ func resolveCodexAutocutSessionID(ctx context.Context, from sdktranslator.Format
 			return cached.ID
 		}
 	}
-	if apiKey := strings.TrimSpace(helps.APIKeyFromContext(ctx)); apiKey != "" {
-		return uuid.NewSHA1(uuid.NameSpaceOID, []byte("cli-proxy-api:codex:prompt-cache:"+apiKey)).String()
+	scopeKey := strings.TrimSpace(helps.APIKeyFromContext(ctx))
+	if scopeKey == "" && auth != nil {
+		scopeKey = strings.TrimSpace(auth.ID)
 	}
-	if auth != nil && strings.TrimSpace(auth.ID) != "" {
-		return "codex-auth-" + strings.TrimSpace(auth.ID)
+	if convSeed := deriveCodexConversationSessionSeed(req.Payload); convSeed != "" {
+		return uuid.NewSHA1(uuid.NameSpaceOID, []byte("cli-proxy-api:codex:conv:"+scopeKey+":"+convSeed)).String()
+	}
+	if scopeKey != "" {
+		return uuid.NewSHA1(uuid.NameSpaceOID, []byte("cli-proxy-api:codex:prompt-cache:"+scopeKey)).String()
 	}
 	return "codex-default"
 }
@@ -237,18 +388,40 @@ func (e *CodexExecutor) applyMeteringBypassToDoc(ctx context.Context, doc *ojson
 }
 
 // enforceMeteringClampsPostFinalizeDoc ensures user payload rules in FinalizePayloadDoc
-// cannot accidentally re-enable high/xhigh reasoning effort or strip service_tier="priority".
+// cannot accidentally re-enable high/xhigh reasoning effort (top-level or configuration_update),
+// re-introduce unsupported parameters, or strip service_tier="priority" / store=false.
 func (e *CodexExecutor) enforceMeteringClampsPostFinalizeDoc(doc *ojson.Doc) {
 	if doc == nil || e == nil || e.cfg == nil {
 		return
 	}
 	cxCfg := &e.cfg.Codex
+	isHighEffort := func(eff string) bool {
+		switch strings.ToLower(strings.TrimSpace(eff)) {
+		case "high", "xhigh", "max", "ultra":
+			return true
+		default:
+			return false
+		}
+	}
 	if !cxCfg.EffectiveAllowHighEffort() {
-		if eff := strings.ToLower(strings.TrimSpace(doc.Get("reasoning.effort").String())); eff == "high" || eff == "xhigh" || eff == "max" || eff == "ultra" {
+		if isHighEffort(doc.Get("reasoning.effort").String()) {
 			_ = doc.Set("reasoning.effort", "medium")
 		}
-		if eff := strings.ToLower(strings.TrimSpace(doc.Get("effort").String())); eff == "high" || eff == "xhigh" || eff == "max" || eff == "ultra" {
+		if isHighEffort(doc.Get("effort").String()) {
 			_ = doc.Set("effort", "medium")
+		}
+		if input := doc.Get("input"); input.IsArray() {
+			for idx, item := range input.Array() {
+				if strings.TrimSpace(item.Get("type").String()) != "configuration_update" {
+					continue
+				}
+				if isHighEffort(item.Get("reasoning.effort").String()) {
+					_ = doc.Set(fmt.Sprintf("input.%d.reasoning.effort", idx), "medium")
+				}
+				if isHighEffort(item.Get("effort").String()) {
+					_ = doc.Set(fmt.Sprintf("input.%d.effort", idx), "medium")
+				}
+			}
 		}
 	}
 	if !cxCfg.EffectiveAllowSolModel() {
@@ -256,8 +429,17 @@ func (e *CodexExecutor) enforceMeteringClampsPostFinalizeDoc(doc *ojson.Doc) {
 			_ = doc.Set("model", "gpt-6-astra")
 		}
 	}
+	helps.SetBoolIfDifferentDoc(doc, "store", false)
+	helps.SetBoolIfDifferentDoc(doc, "stream", true)
 	helps.SetStringIfDifferentDoc(doc, "service_tier", "priority")
-	_ = doc.Delete("max_output_tokens")
+	for _, unsupported := range []string{
+		"max_output_tokens", "max_tokens", "max_completion_tokens",
+		"temperature", "top_p", "frequency_penalty", "presence_penalty",
+		"logprobs", "top_logprobs", "n", "seed", "user", "metadata",
+		"background", "previous_response_id", "prompt_cache_retention", "safety_identifier",
+	} {
+		_ = doc.Delete(unsupported)
+	}
 }
 
 type codexAutocutReadCloser struct {

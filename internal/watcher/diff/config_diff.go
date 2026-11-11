@@ -158,6 +158,15 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.Codex.AutocutFinalizeEnabled() != newCfg.Codex.AutocutFinalizeEnabled() {
 		changes = append(changes, fmt.Sprintf("codex.autocut-finalize: %t -> %t", oldCfg.Codex.AutocutFinalizeEnabled(), newCfg.Codex.AutocutFinalizeEnabled()))
 	}
+	if oldCfg.Codex.EffectiveAllowChatCompletions() != newCfg.Codex.EffectiveAllowChatCompletions() {
+		changes = append(changes, fmt.Sprintf("codex.allow-chat-completions: %t -> %t", oldCfg.Codex.EffectiveAllowChatCompletions(), newCfg.Codex.EffectiveAllowChatCompletions()))
+	}
+	if oldCfg.Codex.CompactHijackEnabled() != newCfg.Codex.CompactHijackEnabled() {
+		changes = append(changes, fmt.Sprintf("codex.compact-hijack: %t -> %t", oldCfg.Codex.CompactHijackEnabled(), newCfg.Codex.CompactHijackEnabled()))
+	}
+	if oldCfg.Codex.EffectiveAutocompactExternalModel() != newCfg.Codex.EffectiveAutocompactExternalModel() {
+		changes = append(changes, fmt.Sprintf("codex.autocompact-external-model: %s -> %s", oldCfg.Codex.EffectiveAutocompactExternalModel(), newCfg.Codex.EffectiveAutocompactExternalModel()))
+	}
 	if strings.TrimSpace(oldCfg.Codex.StreamBootstrapTimeout) != strings.TrimSpace(newCfg.Codex.StreamBootstrapTimeout) {
 		changes = append(changes, fmt.Sprintf("codex.stream-bootstrap-timeout: %s -> %s", strings.TrimSpace(oldCfg.Codex.StreamBootstrapTimeout), strings.TrimSpace(newCfg.Codex.StreamBootstrapTimeout)))
 	}

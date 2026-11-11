@@ -229,6 +229,15 @@ func (c *CodexConfig) EffectiveAllowSolModel() bool {
 	return c != nil && c.AllowSolModel
 }
 
+// EffectiveAllowChatCompletions reports whether non-Responses formats (/v1/chat/completions, /v1/messages)
+// are allowed when MeteringBypass is enabled. Defaults to false (Responses API only, matching 9router :9gl-med).
+func (c *CodexConfig) EffectiveAllowChatCompletions() bool {
+	if v, ok := envBoolOverride("CODEX_ALLOW_CHAT_COMPLETIONS"); ok {
+		return v
+	}
+	return c != nil && c.AllowChatCompletions
+}
+
 // CodexCompactHijackEnabled reports whether client /compact hijack is active on SDKConfig.
 func (c *SDKConfig) CodexCompactHijackEnabled() bool {
 	if v, ok := envBoolOverride("CODEX_COMPACT_HIJACK"); ok {

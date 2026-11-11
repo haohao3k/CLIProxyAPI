@@ -39,6 +39,9 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	autocutSlotTransferred := false
 	if autocutActive {
 		baseModel = e.clampSolBaseModel(baseModel)
+		if errFmt := e.checkCodexResponsesOnlyFormat(opts.SourceFormat, baseModel); errFmt != nil {
+			return nil, errFmt
+		}
 		if errCB := checkCodexCircuitBreakerTripped(auth); errCB != nil {
 			return nil, errCB
 		}

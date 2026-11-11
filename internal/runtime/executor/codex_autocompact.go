@@ -844,44 +844,10 @@ func compactCodexViaExternal(ctx context.Context, cfg *config.Config, items []an
 				break
 			}
 
-			var parsed map[string]any
-			if err := json.Unmarshal(respBytes, &parsed); err != nil {
+			summary, okExtract := extractSummaryFromExternalResponseBytes(respBytes)
+			if !okExtract {
 				markExternalModelFailure(model)
 				break
-			}
-
-			var summary string
-			if choices, ok := parsed["choices"].([]any); ok && len(choices) > 0 {
-				if c0, ok := choices[0].(map[string]any); ok {
-					if msg, ok := c0["message"].(map[string]any); ok {
-						summary, _ = msg["content"].(string)
-					}
-				}
-			}
-			if strings.TrimSpace(summary) == "" {
-				if outText, ok := parsed["output_text"].(string); ok && strings.TrimSpace(outText) != "" {
-					summary = outText
-				} else if outArr, ok := parsed["output"].([]any); ok {
-					var parts []string
-					for _, rawIt := range outArr {
-						it, _ := rawIt.(map[string]any)
-						if autocutStrField(it, "type") != "message" {
-							continue
-						}
-						if cArr, ok := it["content"].([]any); ok {
-							for _, rawC := range cArr {
-								if cm, ok := rawC.(map[string]any); ok {
-									if txt, ok := cm["text"].(string); ok && txt != "" {
-										parts = append(parts, txt)
-									}
-								}
-							}
-						}
-					}
-					if len(parts) > 0 {
-						summary = strings.Join(parts, "\n")
-					}
-				}
 			}
 
 			summary = strings.ReplaceAll(summary, CodexPadKey, "")
@@ -900,6 +866,114 @@ func compactCodexViaExternal(ctx context.Context, cfg *config.Config, items []an
 		}
 	}
 	return ""
+}
+
+func extractSummaryFromParsedResponseMap(parsed map[string]any) string {
+	if parsed == nil {
+		return ""
+	}
+	if choices, ok := parsed["choices"].([]any); ok && len(choices) > 0 {
+		if c0, ok := choices[0].(map[string]any); ok {
+			if msg, ok := c0["message"].(map[string]any); ok {
+				if s, ok := msg["content"].(string); ok && strings.TrimSpace(s) != "" {
+					return s
+				}
+			}
+		}
+	}
+	if outText, ok := parsed["output_text"].(string); ok && strings.TrimSpace(outText) != "" {
+		return outText
+	}
+	target := parsed
+	if respObj, ok := parsed["response"].(map[string]any); ok && respObj != nil {
+		if outText, ok := respObj["output_text"].(string); ok && strings.TrimSpace(outText) != "" {
+			return outText
+		}
+		target = respObj
+	}
+	if outArr, ok := target["output"].([]any); ok {
+		var parts []string
+		for _, rawIt := range outArr {
+			it, _ := rawIt.(map[string]any)
+			if autocutStrField(it, "type") != "message" {
+				continue
+			}
+			if cArr, ok := it["content"].([]any); ok {
+				for _, rawC := range cArr {
+					if cm, ok := rawC.(map[string]any); ok {
+						if txt, ok := cm["text"].(string); ok && txt != "" {
+							parts = append(parts, txt)
+						}
+					}
+				}
+			}
+		}
+		if len(parts) > 0 {
+			return strings.Join(parts, "\n")
+		}
+	}
+	return ""
+}
+
+func extractSummaryFromExternalResponseBytes(respBytes []byte) (string, bool) {
+	trimmed := bytes.TrimSpace(respBytes)
+	if len(trimmed) == 0 {
+		return "", false
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(trimmed, &parsed); err == nil && parsed != nil {
+		return extractSummaryFromParsedResponseMap(parsed), true
+	}
+	// Fallback for dynamic OpenAI-Compat / Responses upstreams that stream SSE despite stream=false (9router commit 062b396d).
+	if !bytes.Contains(trimmed, []byte("data:")) {
+		return "", false
+	}
+	var deltaBuf strings.Builder
+	var completedSummary string
+	sawValidEvent := false
+	for _, rawLine := range strings.Split(string(trimmed), "\n") {
+		line := strings.TrimSpace(rawLine)
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		payload := strings.TrimSpace(line[5:])
+		if payload == "" || payload == "[DONE]" {
+			continue
+		}
+		var ev map[string]any
+		if err := json.Unmarshal([]byte(payload), &ev); err != nil || ev == nil {
+			continue
+		}
+		sawValidEvent = true
+		evType := autocutStrField(ev, "type")
+		switch evType {
+		case "response.output_text.delta":
+			if d, ok := ev["delta"].(string); ok {
+				deltaBuf.WriteString(d)
+			}
+		case "response.completed", "response.done":
+			if s := extractSummaryFromParsedResponseMap(ev); strings.TrimSpace(s) != "" {
+				completedSummary = s
+			}
+		default:
+			if choices, ok := ev["choices"].([]any); ok && len(choices) > 0 {
+				if c0, ok := choices[0].(map[string]any); ok {
+					if dMap, ok := c0["delta"].(map[string]any); ok {
+						if c, ok := dMap["content"].(string); ok {
+							deltaBuf.WriteString(c)
+						}
+					}
+				}
+			}
+		}
+	}
+	if !sawValidEvent {
+		return "", false
+	}
+	if strings.TrimSpace(completedSummary) != "" {
+		return completedSummary, true
+	}
+	return deltaBuf.String(), true
 }
 
 // maybeCodexAutocompactMap runs Pass 0 (immutable tool-output trimming), Pass 1 (128-entry LRU cache),

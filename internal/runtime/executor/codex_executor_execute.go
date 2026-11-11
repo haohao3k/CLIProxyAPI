@@ -116,6 +116,9 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	var autocutSessionID string
 	if autocutActive {
 		baseModel = e.clampSolBaseModel(baseModel)
+		if errFmt := e.checkCodexResponsesOnlyFormat(opts.SourceFormat, baseModel); errFmt != nil {
+			return resp, errFmt
+		}
 		if errCB := checkCodexCircuitBreakerTripped(auth); errCB != nil {
 			return resp, errCB
 		}

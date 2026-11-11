@@ -591,7 +591,16 @@ func injectCodexMeteringBypassMap(body map[string]any, opts CodexInjectOptions) 
 	log.Debugf("[AC:INJECT] model=%s finalize=%v lite=%v items=%d", modelName, opts.FinalizeMode, opts.ResponsesLite, len(inputArr))
 }
 
-// applyCodexMeteringClampsMap enforces :9gl-med model, reasoning-effort, output-budget,
+func isBareServerItemRefString(s string) bool {
+	trimmed := strings.TrimSpace(s)
+	return strings.HasPrefix(trimmed, "rs_") ||
+		strings.HasPrefix(trimmed, "fc_") ||
+		strings.HasPrefix(trimmed, "resp_") ||
+		strings.HasPrefix(trimmed, "msg_")
+}
+
+// applyCodexMeteringClampsMap enforces :9gl-med model, reasoning-effort (top-level + configuration_update),
+// store=false item_reference stripping, include=["reasoning.encrypted_content"], output-budget stripping,
 // parallel_tool_calls, and priority service_tier rules.
 func applyCodexMeteringClampsMap(body map[string]any, cfg *config.Config, responsesLite bool) {
 	if body == nil {
@@ -618,22 +627,121 @@ func applyCodexMeteringClampsMap(body map[string]any, cfg *config.Config, respon
 		return eff
 	}
 
+	if inputArr, ok := body["input"].([]any); ok && len(inputArr) > 0 {
+		cleaned := make([]any, 0, len(inputArr))
+		modified := false
+		for _, rawIt := range inputArr {
+			if strIt, isStr := rawIt.(string); isStr && isBareServerItemRefString(strIt) {
+				modified = true
+				continue
+			}
+			it, isMap := rawIt.(map[string]any)
+			if isMap && it != nil {
+				itType, _ := it["type"].(string)
+				if itType == "item_reference" {
+					modified = true
+					continue
+				}
+				if itType == "configuration_update" {
+					if cuRMap, ok := it["reasoning"].(map[string]any); ok && cuRMap != nil {
+						if cuEff, ok := cuRMap["effort"].(string); ok && cuEff != "" {
+							clamped := clampEffort(cuEff)
+							if clamped != cuEff {
+								cuRMap["effort"] = clamped
+								modified = true
+							}
+						}
+					}
+					if cuEff, ok := it["effort"].(string); ok && cuEff != "" {
+						clamped := clampEffort(cuEff)
+						if clamped != cuEff {
+							it["effort"] = clamped
+							modified = true
+						}
+					}
+				}
+			}
+			cleaned = append(cleaned, rawIt)
+		}
+		if modified {
+			body["input"] = cleaned
+		}
+	}
+
+	defaultEffort := "low"
+	if responsesLite {
+		defaultEffort = "medium"
+	}
+	legacyEffort, _ := body["reasoning_effort"].(string)
+	if legacyEffort == "" {
+		legacyEffort, _ = body["effort"].(string)
+	}
+
+	var activeEffort string
 	if rMap, ok := body["reasoning"].(map[string]any); ok && rMap != nil {
-		if eff, ok := rMap["effort"].(string); ok && eff != "" {
-			rMap["effort"] = clampEffort(eff)
+		eff, _ := rMap["effort"].(string)
+		if strings.TrimSpace(eff) == "" {
+			if strings.TrimSpace(legacyEffort) != "" {
+				eff = legacyEffort
+			} else {
+				eff = defaultEffort
+			}
+		}
+		activeEffort = clampEffort(eff)
+		rMap["effort"] = activeEffort
+		if !responsesLite {
+			if sum, _ := rMap["summary"].(string); strings.TrimSpace(sum) == "" {
+				rMap["summary"] = "auto"
+			}
+		}
+	} else {
+		eff := legacyEffort
+		if strings.TrimSpace(eff) == "" {
+			eff = defaultEffort
+		}
+		activeEffort = clampEffort(eff)
+		if responsesLite {
+			body["reasoning"] = map[string]any{"effort": activeEffort}
+		} else {
+			body["reasoning"] = map[string]any{"effort": activeEffort, "summary": "auto"}
 		}
 	}
 	if eff, ok := body["effort"].(string); ok && eff != "" {
 		body["effort"] = clampEffort(eff)
 	}
-	if eff, ok := body["reasoning_effort"].(string); ok && eff != "" {
-		body["reasoning_effort"] = clampEffort(eff)
+	delete(body, "reasoning_effort")
+
+	if activeEffort != "" && !strings.EqualFold(strings.TrimSpace(activeEffort), "none") {
+		hasEncrypted := false
+		var incList []any
+		if existingInc, ok := body["include"].([]any); ok {
+			for _, v := range existingInc {
+				if s, ok := v.(string); ok {
+					if s == "reasoning.encrypted_content" {
+						hasEncrypted = true
+					}
+					incList = append(incList, s)
+				}
+			}
+		}
+		if !hasEncrypted {
+			incList = append([]any{"reasoning.encrypted_content"}, incList...)
+			body["include"] = incList
+		}
 	}
 
-	// Prevent client max_output_tokens from causing an incomplete billable turn before __pad9f3 cuts
-	delete(body, "max_output_tokens")
-	delete(body, "max_tokens")
-	delete(body, "max_completion_tokens")
+	body["store"] = false
+	body["stream"] = true
+
+	// Strip unsupported parameters & output token caps that would reject or truncate before __pad9f3 cuts
+	for _, unsupported := range []string{
+		"max_output_tokens", "max_tokens", "max_completion_tokens",
+		"temperature", "top_p", "frequency_penalty", "presence_penalty",
+		"logprobs", "top_logprobs", "n", "seed", "user", "metadata",
+		"background", "previous_response_id", "prompt_cache_retention", "safety_identifier",
+	} {
+		delete(body, unsupported)
+	}
 
 	if responsesLite {
 		body["parallel_tool_calls"] = false

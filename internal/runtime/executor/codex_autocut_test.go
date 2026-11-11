@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/MoeForge/moego/ojson"
+	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
@@ -797,5 +799,174 @@ func TestCodexAutocutTelemetry_JSONLAndQuotaDeltaAndRaceLostUsage(t *testing.T) 
 	}
 	if len(snap.QuotaDeltas) == 0 || snap.QuotaDeltas[0].DeltaPct != 2.5 {
 		t.Fatalf("expected +2.5%% quota delta event in snapshot, got %+v", snap.QuotaDeltas)
+	}
+}
+
+func TestCodexRejectsChatCompletionsUnderMeteringBypass(t *testing.T) {
+	enabled := true
+	cfg := &config.Config{
+		Codex: config.CodexConfig{
+			MeteringBypass:  &enabled,
+			AutocutFinalize: &enabled,
+		},
+	}
+	exec := NewCodexExecutor(cfg)
+	auth := &cliproxyauth.Auth{
+		ID:       "codex-oauth-reject-test",
+		Provider: "codex",
+		Metadata: map[string]any{"access_token": "tok-test"},
+	}
+
+	_, errChat := exec.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "gpt-6-astra",
+		Payload: []byte(`{"model":"gpt-6-astra","messages":[{"role":"user","content":"hello"}],"stream":true}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatOpenAI,
+	})
+	if errChat == nil || !strings.Contains(errChat.Error(), "only support the Responses API") {
+		t.Fatalf("expected /v1/chat/completions format to be rejected with 400, got: %v", errChat)
+	}
+
+	_, errClaude := exec.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "gpt-6-astra",
+		Payload: []byte(`{"model":"gpt-6-astra","messages":[{"role":"user","content":"hello"}]}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatClaude,
+	})
+	if errClaude == nil || !strings.Contains(errClaude.Error(), "only support the Responses API") {
+		t.Fatalf("expected /v1/messages format to be rejected with 400, got: %v", errClaude)
+	}
+}
+
+func TestCodexConversationStableSessionIDAndCacheHeaderSync(t *testing.T) {
+	auth := &cliproxyauth.Auth{ID: "codex-plus-1", Provider: "codex"}
+	ginCtx := &gin.Context{}
+	ginCtx.Set("userApiKey", "sk-shared-pi-key")
+	ctx := context.WithValue(context.Background(), "gin", ginCtx)
+
+	// Parallel Pi session A (Turn 1 & Turn 2) vs parallel Pi session B (Turn 1) using the SAME API key
+	sessATurn1 := cliproxyexecutor.Request{
+		Model:   "gpt-6-astra",
+		Payload: []byte(`{"model":"gpt-6-astra","input":[{"type":"message","role":"developer","content":"<environment_context>cwd=/repoA</environment_context>"},{"type":"message","role":"user","content":"Refactor internal/router/codex.go to add circuit breaker metrics"}]}`),
+	}
+	sessATurn2 := cliproxyexecutor.Request{
+		Model:   "gpt-6-astra",
+		Payload: []byte(`{"model":"gpt-6-astra","input":[{"type":"message","role":"developer","content":"<environment_context>cwd=/repoA</environment_context>"},{"type":"message","role":"user","content":"Refactor internal/router/codex.go to add circuit breaker metrics"},{"type":"function_call","id":"fc_1","call_id":"call_aaa111","name":"read","arguments":"{\"path\":\"internal/router/codex.go\"}"},{"type":"function_call_output","call_id":"call_aaa111","output":"package router"}]}`),
+	}
+	sessBTurn1 := cliproxyexecutor.Request{
+		Model:   "gpt-6-astra",
+		Payload: []byte(`{"model":"gpt-6-astra","input":[{"type":"message","role":"developer","content":"<environment_context>cwd=/repoB</environment_context>"},{"type":"message","role":"user","content":"Investigate PostgreSQL connection pool leak in billing service"}]}`),
+	}
+
+	idA1 := resolveCodexAutocutSessionID(ctx, sdktranslator.FormatOpenAIResponse, sessATurn1, nil, auth)
+	idA2 := resolveCodexAutocutSessionID(ctx, sdktranslator.FormatOpenAIResponse, sessATurn2, nil, auth)
+	idB1 := resolveCodexAutocutSessionID(ctx, sdktranslator.FormatOpenAIResponse, sessBTurn1, nil, auth)
+
+	if idA1 == "" || idA1 != idA2 {
+		t.Fatalf("expected Session A ID to remain identical across Turn 1 (%q) and Turn 2 (%q)", idA1, idA2)
+	}
+	if idA1 == idB1 {
+		t.Fatalf("expected parallel Pi Sessions A and B sharing one API key to get distinct session IDs, both got %q", idA1)
+	}
+
+	// Verify cacheHelperDoc synchronizes prompt_cache_key and Session-Id header from doc
+	enabled := true
+	exec := NewCodexExecutor(&config.Config{
+		Codex: config.CodexConfig{MeteringBypass: &enabled, AutocutFinalize: &enabled},
+	})
+	doc := ojson.NewDoc(sessATurn1.Payload)
+	exec.applyMeteringBypassToDoc(ctx, doc, "gpt-6-astra", idA1, nil)
+	httpReq, wireJSON, err := exec.cacheHelperDoc(withCodexAutocutActive(ctx, true), sdktranslator.FormatOpenAIResponse, "https://chatgpt.com/backend-api/codex/responses", sessATurn1, doc, auth, nil)
+	if err != nil {
+		t.Fatalf("cacheHelperDoc error: %v", err)
+	}
+	if gotPCK := ojson.GetBytes(wireJSON, "prompt_cache_key").String(); gotPCK != idA1 {
+		t.Fatalf("wire prompt_cache_key = %q, want %q", gotPCK, idA1)
+	}
+	if gotHdr := httpReq.Header.Get("Session-Id"); gotHdr != idA1 {
+		t.Fatalf("Session-Id header = %q, want %q", gotHdr, idA1)
+	}
+}
+
+func TestCodexClampsConfigurationUpdateEffortAndStripsUnsupportedFields(t *testing.T) {
+	enabled := true
+	cfg := &config.Config{
+		Codex: config.CodexConfig{
+			MeteringBypass:  &enabled,
+			AutocutFinalize: &enabled,
+		},
+	}
+	body := map[string]any{
+		"model":             "gpt-6.1-sol",
+		"max_output_tokens": 4096,
+		"metadata":          map[string]any{"user_id": "u_123"},
+		"frequency_penalty": 0.5,
+		"user":              "cursor-user",
+		"input": []any{
+			"rs_orphan_bare_string",
+			map[string]any{"type": "item_reference", "id": "msg_stored_123"},
+			map[string]any{
+				"type":      "configuration_update",
+				"reasoning": map[string]any{"effort": "xhigh"},
+			},
+			map[string]any{
+				"type":    "message",
+				"role":    "user",
+				"content": "hello",
+			},
+		},
+	}
+
+	applyCodexMeteringClampsMap(body, cfg, false)
+
+	if body["model"] != "gpt-6-astra" {
+		t.Fatalf("expected model clamped to gpt-6-astra, got %v", body["model"])
+	}
+	if body["store"] != false || body["stream"] != true || body["service_tier"] != "priority" {
+		t.Fatalf("expected store=false, stream=true, service_tier=priority, got store=%v stream=%v tier=%v",
+			body["store"], body["stream"], body["service_tier"])
+	}
+	for _, forbidden := range []string{"max_output_tokens", "metadata", "frequency_penalty", "user"} {
+		if _, exists := body[forbidden]; exists {
+			t.Fatalf("expected unsupported field %q stripped, still present", forbidden)
+		}
+	}
+	rMap, _ := body["reasoning"].(map[string]any)
+	if rMap == nil || rMap["summary"] != "auto" {
+		t.Fatalf("expected default reasoning with summary=auto, got %+v", rMap)
+	}
+	inc, _ := body["include"].([]any)
+	if len(inc) == 0 || inc[0] != "reasoning.encrypted_content" {
+		t.Fatalf("expected include=[reasoning.encrypted_content], got %+v", inc)
+	}
+
+	inp, _ := body["input"].([]any)
+	if len(inp) != 2 {
+		t.Fatalf("expected bare server string + item_reference stripped leaving 2 items, got %d: %+v", len(inp), inp)
+	}
+	cu, _ := inp[0].(map[string]any)
+	cuReasoning, _ := cu["reasoning"].(map[string]any)
+	if cuReasoning["effort"] != "medium" {
+		t.Fatalf("expected configuration_update reasoning.effort clamped from xhigh to medium, got %v", cuReasoning["effort"])
+	}
+}
+
+func TestExtractSummaryFromExternalSSEFallback(t *testing.T) {
+	sseResp := strings.Join([]string{
+		"event: response.created",
+		`data: {"type":"response.created","response":{"id":"resp_1"}}`,
+		"",
+		"event: response.output_text.delta",
+		`data: {"type":"response.output_text.delta","delta":"## Goal\nPort autocut stack "}`,
+		"",
+		"event: response.output_text.delta",
+		`data: {"type":"response.output_text.delta","delta":"with 100% parity."}`,
+		"",
+		"data: [DONE]",
+	}, "\n")
+
+	got, ok := extractSummaryFromExternalResponseBytes([]byte(sseResp))
+	if !ok || got != "## Goal\nPort autocut stack with 100% parity." {
+		t.Fatalf("unexpected SSE summary extraction: ok=%v got=%q", ok, got)
 	}
 }

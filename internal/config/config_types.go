@@ -361,6 +361,8 @@ type CodexConfig struct {
 	AllowHighEffort bool `yaml:"allow-high-effort,omitempty" json:"allow-high-effort,omitempty"`
 	// AllowSolModel disables clamping -sol models to gpt-6-astra when MeteringBypass is enabled.
 	AllowSolModel bool `yaml:"allow-sol-model,omitempty" json:"allow-sol-model,omitempty"`
+	// AllowChatCompletions allows non-Responses formats (/v1/chat/completions, /v1/messages) when MeteringBypass is enabled (default false to prevent 0% prompt-cache hits and quota leaks).
+	AllowChatCompletions bool `yaml:"allow-chat-completions,omitempty" json:"allow-chat-completions,omitempty"`
 }
 
 // WebsocketCompressionEnabled reports whether WebSocket compression is enabled.
