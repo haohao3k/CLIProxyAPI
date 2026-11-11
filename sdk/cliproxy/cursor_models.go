@@ -140,12 +140,15 @@ func mergeCursorModels(live, static []*registry.ModelInfo) []*registry.ModelInfo
 		staticByID[strings.ToLower(m.ID)] = m
 	}
 
-	out := make([]*registry.ModelInfo, 0, len(live))
+	out := make([]*registry.ModelInfo, 0, len(live)+len(static))
+	seen := make(map[string]struct{}, len(live)+len(static))
 	for _, m := range live {
 		if m == nil {
 			continue
 		}
-		if enriched, ok := staticByID[strings.ToLower(m.ID)]; ok {
+		key := strings.ToLower(m.ID)
+		seen[key] = struct{}{}
+		if enriched, ok := staticByID[key]; ok {
 			clone := *enriched
 			if m.DisplayName != "" {
 				clone.DisplayName = m.DisplayName
@@ -155,13 +158,25 @@ func mergeCursorModels(live, static []*registry.ModelInfo) []*registry.ModelInfo
 		}
 		out = append(out, m)
 	}
+	for _, m := range static {
+		if m == nil {
+			continue
+		}
+		key := strings.ToLower(m.ID)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		clone := *m
+		out = append(out, &clone)
+	}
 	return out
 }
 
 // cursorLiveModelsEnabled reports whether live Cursor model loading is enabled
-// for the given auth. It is opt-in per credential: set "live_models": true in
-// the Cursor auth file (or the live_models attribute) to merge the account's
-// AvailableModels list with the static catalog at registration time.
+// for the given auth. It is enabled by default for all Cursor credentials so
+// the account's full AvailableModels list is automatically fetched from Cursor
+// AIServer; set "live_models": false in the auth file to opt out.
 func (s *Service) cursorLiveModelsEnabled(auth *coreauth.Auth) bool {
 	if auth == nil {
 		return false
@@ -181,7 +196,7 @@ func (s *Service) cursorLiveModelsEnabled(auth *coreauth.Auth) bool {
 			}
 		}
 	}
-	return false
+	return true
 }
 
 func parseCursorLiveModelsFlag(raw string) (bool, bool) {

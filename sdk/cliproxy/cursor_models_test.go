@@ -7,7 +7,7 @@ import (
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
-func TestCursorLiveModelsEnabledIsOptIn(t *testing.T) {
+func TestCursorLiveModelsEnabledDefaultOn(t *testing.T) {
 	s := &Service{}
 	cases := []struct {
 		name string
@@ -15,8 +15,9 @@ func TestCursorLiveModelsEnabledIsOptIn(t *testing.T) {
 		want bool
 	}{
 		{"nil", nil, false},
-		{"default off", &coreauth.Auth{}, false},
-		{"metadata bool", &coreauth.Auth{Metadata: map[string]any{"live_models": true}}, true},
+		{"default on", &coreauth.Auth{}, true},
+		{"metadata bool false", &coreauth.Auth{Metadata: map[string]any{"live_models": false}}, false},
+		{"metadata bool true", &coreauth.Auth{Metadata: map[string]any{"live_models": true}}, true},
 		{"metadata string", &coreauth.Auth{Metadata: map[string]any{"live_models": "yes"}}, true},
 		{"attribute wins", &coreauth.Auth{Attributes: map[string]string{"live_models": "false"}, Metadata: map[string]any{"live_models": true}}, false},
 	}
