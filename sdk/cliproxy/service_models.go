@@ -330,6 +330,15 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 					// Declaring one named "mistral" overrides this default list.
 					models = defaultMistralCompatModels()
 				}
+				if strings.EqualFold(compatName, util.MistralProvider) {
+					mistralExcluded := excluded
+					if len(mistralExcluded) == 0 {
+						mistralExcluded = oauthExcludedModelsForConfig(cfg, util.MistralProvider, authKind)
+					}
+					models = applyExcludedModels(models, mistralExcluded)
+					models = applyOAuthModelAliasForAuth(cfg, util.MistralProvider, authKind, a.Attributes, models)
+					models = applyOAuthSettingsForAuth(cfg, util.MistralProvider, authKind, models)
+				}
 				if len(models) > 0 {
 					published = s.registerResolvedModelsForAuthFenced(a, fence, providerKey, applyModelPrefixes(models, a.Prefix, cfg.ForceModelPrefix))
 				} else {
@@ -679,7 +688,13 @@ func oauthExcludedModelsForConfig(cfg *config.Config, provider, authKind string)
 	if authKindKey == "apikey" {
 		return nil
 	}
-	return cfg.OAuthExcludedModels[providerKey]
+	if list := cfg.OAuthExcludedModels[providerKey]; len(list) > 0 {
+		return list
+	}
+	if ch := coreauth.OAuthModelAliasChannel(providerKey, authKindKey); ch != "" && ch != providerKey {
+		return cfg.OAuthExcludedModels[ch]
+	}
+	return nil
 }
 
 func applyExcludedModels(models []*ModelInfo, excluded []string) []*ModelInfo {

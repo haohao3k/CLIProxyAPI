@@ -668,7 +668,7 @@ func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 		return GetDevinModels()
 	case "meta", "muse":
 		return GetMetaModels()
-	case "mistral":
+	case "mistral", "openai-compatible-mistral", "mistral-vibe":
 		return GetMistralModels()
 	case "zai", "z.ai", "glm":
 		return GetZAIModels()

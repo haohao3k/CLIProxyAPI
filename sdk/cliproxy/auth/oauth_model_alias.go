@@ -536,8 +536,14 @@ func OAuthModelAliasChannel(provider, authKind string) string {
 		return "claude"
 	case "codex":
 		return "codex"
-	case "aistudio", "antigravity", "kimi", "kimi-ai", "kimi.ai", "kimi.com", "xai", "meta":
+	case "aistudio", "antigravity", "kimi", "kimi-ai", "kimi.ai", "kimi.com", "xai", "meta", "cursor", "devin", "zai", "opencode", "mistral":
 		return provider
+	case "openai-compatible-mistral", "mistral-vibe":
+		return "mistral"
+	case "opencode-go", "ocg", "opencode_go":
+		return "opencode"
+	case "z.ai", "glm":
+		return "zai"
 	default:
 		return provider
 	}
