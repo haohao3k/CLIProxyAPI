@@ -383,8 +383,82 @@ func (e *CodexExecutor) applyMeteringBypassToDoc(ctx context.Context, doc *ojson
 	if err != nil {
 		return estInputTokens, finalizeMode
 	}
-	*doc = *ojson.NewDoc(mutated)
+	origDoc := ojson.NewDoc(raw)
+	newDoc := ojson.NewDoc(mutated)
+	restoreToolPropertyOrderAndEnsurePadLast(origDoc, newDoc)
+	*doc = *newDoc
 	return estInputTokens, finalizeMode
+}
+
+func movePadKeyLastAtPropsPath(origDoc, doc *ojson.Doc, propsPath string) {
+	if doc == nil {
+		return
+	}
+	padPath := propsPath + "." + CodexPadKey
+	padVal := doc.Get(padPath)
+	if !padVal.Exists() {
+		return
+	}
+	padRaw := padVal.Raw
+	// Restore client's original property insertion order when available so Go's
+	// alphabetical map marshaling never scrambles tool schemas or busts prompt cache.
+	if origDoc != nil {
+		if origProps := origDoc.Get(propsPath); origProps.IsObject() {
+			_ = doc.SetRaw(propsPath, origProps.Raw)
+		}
+	}
+	_ = doc.Delete(padPath)
+	_ = doc.SetRaw(padPath, padRaw)
+}
+
+func movePadKeyLastForToolAtPath(origDoc, doc *ojson.Doc, toolPath string) {
+	if doc == nil {
+		return
+	}
+	t := doc.Get(toolPath)
+	if !t.IsObject() {
+		return
+	}
+	if strings.TrimSpace(t.Get("type").String()) == "namespace" {
+		if sub := t.Get("tools"); sub.IsArray() {
+			for j := range sub.Array() {
+				movePadKeyLastForToolAtPath(origDoc, doc, fmt.Sprintf("%s.tools.%d", toolPath, j))
+			}
+		}
+		return
+	}
+	if t.Get("parameters.properties").IsObject() {
+		movePadKeyLastAtPropsPath(origDoc, doc, toolPath+".parameters.properties")
+	}
+	if t.Get("function.parameters.properties").IsObject() {
+		movePadKeyLastAtPropsPath(origDoc, doc, toolPath+".function.parameters.properties")
+	}
+}
+
+// restoreToolPropertyOrderAndEnsurePadLast prevents Go's encoding/json alphabetical map key
+// sorting from placing "__pad9f3" ('_' = ASCII 95) BEFORE lowercase tool parameters ('a'..'z' = 97..122),
+// which otherwise causes the model to generate "__pad9f3" first and cut before real arguments!
+func restoreToolPropertyOrderAndEnsurePadLast(origDoc, doc *ojson.Doc) {
+	if doc == nil {
+		return
+	}
+	if tools := doc.Get("tools"); tools.IsArray() {
+		for i := range tools.Array() {
+			movePadKeyLastForToolAtPath(origDoc, doc, fmt.Sprintf("tools.%d", i))
+		}
+	}
+	if input := doc.Get("input"); input.IsArray() {
+		for idx, item := range input.Array() {
+			if strings.TrimSpace(item.Get("type").String()) != "additional_tools" {
+				continue
+			}
+			if sub := item.Get("tools"); sub.IsArray() {
+				for j := range sub.Array() {
+					movePadKeyLastForToolAtPath(origDoc, doc, fmt.Sprintf("input.%d.tools.%d", idx, j))
+				}
+			}
+		}
+	}
 }
 
 // enforceMeteringClampsPostFinalizeDoc ensures user payload rules in FinalizePayloadDoc
@@ -440,6 +514,7 @@ func (e *CodexExecutor) enforceMeteringClampsPostFinalizeDoc(doc *ojson.Doc) {
 	} {
 		_ = doc.Delete(unsupported)
 	}
+	restoreToolPropertyOrderAndEnsurePadLast(nil, doc)
 }
 
 type codexAutocutReadCloser struct {

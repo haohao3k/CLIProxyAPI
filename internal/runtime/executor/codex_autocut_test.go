@@ -970,3 +970,44 @@ func TestExtractSummaryFromExternalSSEFallback(t *testing.T) {
 		t.Fatalf("unexpected SSE summary extraction: ok=%v got=%q", ok, got)
 	}
 }
+
+func TestCodexPadPropertySerializedLastInToolSchemasAnd9glMedStreakRules(t *testing.T) {
+	enabled := true
+	exec := NewCodexExecutor(&config.Config{
+		Codex: config.CodexConfig{MeteringBypass: &enabled, AutocutFinalize: &enabled},
+	})
+	rawReq := []byte(`{"model":"gpt-6-astra","tools":[{"type":"function","name":"edit_file","parameters":{"type":"object","properties":{"oldText":{"type":"string"},"newText":{"type":"string"},"path":{"type":"string"}},"required":["oldText","newText","path"]}}],"input":[{"type":"message","role":"user","content":"edit config.yaml"}]}`)
+	doc := ojson.NewDoc(rawReq)
+	exec.applyMeteringBypassToDoc(context.Background(), doc, "gpt-6-astra", "sess-order-1", nil)
+	exec.enforceMeteringClampsPostFinalizeDoc(doc)
+
+	wire := string(doc.Bytes())
+	idxOld := strings.Index(wire, `"oldText"`)
+	idxNew := strings.Index(wire, `"newText"`)
+	idxPath := strings.Index(wire, `"path"`)
+	idxPad := strings.Index(wire, `"__pad9f3"`)
+	if idxOld == -1 || idxNew == -1 || idxPath == -1 || idxPad == -1 {
+		t.Fatalf("missing expected property keys in wire JSON: %s", wire)
+	}
+	if !(idxOld < idxNew && idxNew < idxPath && idxPath < idxPad) {
+		t.Fatalf("expected original property order oldText < newText < path < __pad9f3, got indices %d, %d, %d, %d in: %s",
+			idxOld, idxNew, idxPath, idxPad, wire)
+	}
+
+	// Verify :9gl-med <300 / <500 thresholds and immediate clear on clean cut (Iron Rules #4 & #12)
+	clearCodexAutocutViolations("sess-9gl-med")
+	applyCodexAutocutSessionTelemetry(
+		CodexAutocutOptions{SessionID: "sess-9gl-med"},
+		CodexAutocutTelemetry{How: "toolpad", DeliveredChars: 120},
+	)
+	if got := getCodexAutocutStreak("sess-9gl-med"); got != 2 {
+		t.Fatalf("expected micro-toolpad (<300ch) to arm streak=2, got %d", got)
+	}
+	applyCodexAutocutSessionTelemetry(
+		CodexAutocutOptions{SessionID: "sess-9gl-med"},
+		CodexAutocutTelemetry{How: "toolpad", DeliveredChars: 420},
+	)
+	if got := getCodexAutocutStreak("sess-9gl-med"); got != 0 {
+		t.Fatalf("expected clean >=300ch toolpad cut to immediately clear streak to 0, got %d", got)
+	}
+}

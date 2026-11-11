@@ -778,15 +778,15 @@ func applyCodexAutocutSessionTelemetry(opts CodexAutocutOptions, tel CodexAutocu
 		how = "eof"
 	}
 	deliveredEst := tel.DeliveredChars
-	isMicroToolpad := how == "toolpad" && deliveredEst < 800
-	isShortFinalize := how == "finalize" && deliveredEst < 1200
+	isMicroToolpad := how == "toolpad" && deliveredEst < 300
+	isShortFinalize := how == "finalize" && deliveredEst < 500
 	isUnpadded := strings.Contains(how, "unpadded")
 	isTooShort := isMicroToolpad || isShortFinalize || isUnpadded
 
 	if how == "terminal" || how == "argcap" || strings.HasPrefix(how, "eof") || tel.RaceLost || isTooShort {
 		recordCodexAutocutViolation(sessionID, 2)
 	} else if how != "upstream-error" {
-		decayCodexAutocutViolations(sessionID)
+		clearCodexAutocutViolations(sessionID)
 	}
 	recordCodexSessionRisk(sessionID, how)
 	streak := getCodexAutocutStreak(sessionID)
