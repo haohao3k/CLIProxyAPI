@@ -72,11 +72,32 @@ func IsOpencodeUpstream(provider string, auth *cliproxyauth.Auth, compat *config
 	return strings.Contains(lowerURL, "opencode.ai/zen/go")
 }
 
-// EnsureOpencodeSessionHeader sets the required x-opencode-session header on
-// OpenCode Go requests if the caller did not already provide one.
+// OpencodeDefaultUserAgent is the safe User-Agent sent to opencode.ai/zen/go
+// so Cloudflare Browser Integrity Check never blocks forwarded client User-Agents
+// (such as Python-urllib/* or Go-http-client/*) with HTTP 403 error code: 1010.
+const OpencodeDefaultUserAgent = "opencode/1.0.0"
+
+func hasExplicitCustomUserAgentAttr(auth *cliproxyauth.Auth) bool {
+	if auth == nil || len(auth.Attributes) == 0 {
+		return false
+	}
+	for k, v := range auth.Attributes {
+		trimmedKey := strings.ToLower(strings.TrimSpace(k))
+		if trimmedKey == "header.user-agent" && strings.TrimSpace(v) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// EnsureOpencodeSessionHeader sets the required x-opencode-session header and a
+// Cloudflare-safe User-Agent on OpenCode Go requests.
 func EnsureOpencodeSessionHeader(r *http.Request, ctx context.Context, provider string, auth *cliproxyauth.Auth, compat *config.OpenAICompatibility, baseURL string, opts cliproxyexecutor.Options, req cliproxyexecutor.Request) {
 	if r == nil || !IsOpencodeUpstream(provider, auth, compat, baseURL) {
 		return
+	}
+	if !hasExplicitCustomUserAgentAttr(auth) {
+		r.Header.Set("User-Agent", OpencodeDefaultUserAgent)
 	}
 	if strings.TrimSpace(r.Header.Get("x-opencode-session")) != "" {
 		return
@@ -233,6 +254,32 @@ func IsResponsesTerminalEventType(eventType string) bool {
 	}
 }
 
+// IsEmptyZeroUsageResponsesTerminal detects broken third-party /responses proxies
+// (e.g. quota-exhausted gateways that swallow upstream errors and emit HTTP 200
+// response.completed with output=[], output_text="", and explicit 0/0 token usage).
+func IsEmptyZeroUsageResponsesTerminal(responseNode ojson.Result) bool {
+	if !responseNode.IsObject() {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(responseNode.Get("status").String()), "completed") {
+		return false
+	}
+	output := responseNode.Get("output")
+	if !output.IsArray() || len(output.Array()) > 0 {
+		return false
+	}
+	if strings.TrimSpace(responseNode.Get("output_text").String()) != "" {
+		return false
+	}
+	usage := responseNode.Get("usage")
+	if !usage.IsObject() || !usage.Get("input_tokens").Exists() || !usage.Get("output_tokens").Exists() {
+		return false
+	}
+	return usage.Get("input_tokens").Int() == 0 &&
+		usage.Get("output_tokens").Int() == 0 &&
+		usage.Get("total_tokens").Int() == 0
+}
+
 // OpenAICompatResponsesNonStreamPayload normalizes a non-streaming Responses upstream body.
 // It returns the terminal event ({"type":"response.completed","response":{...}}) consumed by
 // the Responses-shaped translators and usage parsers, plus the bare response object.
@@ -258,6 +305,9 @@ func OpenAICompatResponsesNonStreamPayload(body []byte) (event []byte, response 
 		if eventType == "response.failed" || strings.EqualFold(responseNode.Get("status").String(), "failed") {
 			return nil, nil, fmt.Errorf("upstream response failed: %s", responseNode.Get("error").Raw)
 		}
+		if IsEmptyZeroUsageResponsesTerminal(responseNode) {
+			return nil, nil, fmt.Errorf("upstream returned empty zero-usage responses completion")
+		}
 		if eventType == "response.done" {
 			eventType = "response.completed"
 			if strings.EqualFold(responseNode.Get("status").String(), "incomplete") {
@@ -276,6 +326,9 @@ func OpenAICompatResponsesNonStreamPayload(body []byte) (event []byte, response 
 	status := ojson.GetBytesNoCopy(trimmed, "status").String()
 	if strings.EqualFold(status, "failed") {
 		return nil, nil, fmt.Errorf("upstream response failed: %s", ojson.GetBytesNoCopy(trimmed, "error").Raw)
+	}
+	if IsEmptyZeroUsageResponsesTerminal(ojson.ParseBytes(trimmed)) {
+		return nil, nil, fmt.Errorf("upstream returned empty zero-usage responses completion")
 	}
 	eventType = "response.completed"
 	if strings.EqualFold(status, "incomplete") {

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"net/http"
+	"runtime"
 	"strings"
 	"time"
 
@@ -13,21 +14,30 @@ import (
 )
 
 const (
-	// APIHost is the Cursor AIServer origin.
+	// APIHost is the legacy Cursor AIServer origin (used for image-containing requests).
 	APIHost = "https://api2.cursor.sh"
-	// apiHostHeader is the Host header Cursor's own client sends.
+	// apiHostHeader is the Host header Cursor's own client sends to api2.
 	apiHostHeader = "api2.cursor.sh"
 
-	// ChatEndpoint is the Connect-RPC path for a unified chat stream.
+	// AgentHost is the Cursor AgentService HTTP/2 origin used by current Cursor IDE releases.
+	AgentHost = "https://agent.api5.cursor.sh"
+	// AgentHostHeader is the Host/:authority header for AgentService.
+	AgentHostHeader = "agent.api5.cursor.sh"
+
+	// ChatEndpoint is the legacy Connect-RPC path for a unified chat stream.
 	ChatEndpoint = APIHost + "/aiserver.v1.ChatService/StreamUnifiedChatWithTools"
-	// AvailableModelsEndpoint lists the models the account may use.
+	// AvailableModelsEndpoint lists models on legacy AIServer.
 	AvailableModelsEndpoint = APIHost + "/aiserver.v1.AiService/AvailableModels"
 
-	// DefaultClientVersion is the Cursor client version reported to the API.
-	// Cursor rejects releases it no longer supports with ERROR_OUTDATED_CLIENT,
-	// so this has to track the current release from
-	// https://api2.cursor.sh/updates/api/update/linux-x64/cursor/0.0.0/stable.
-	DefaultClientVersion = "3.17.8"
+	// AgentRunEndpoint is the bidirectional Connect-RPC path for Cursor AgentService.
+	AgentRunEndpoint = AgentHost + "/agent.v1.AgentService/Run"
+	// GetUsableModelsEndpoint returns the live account-specific model picker catalog.
+	GetUsableModelsEndpoint = AgentHost + "/agent.v1.AgentService/GetUsableModels"
+
+	// DefaultClientVersion is the Cursor IDE client version reported to AgentService/AIServer.
+	DefaultClientVersion = "3.12.17"
+	// DefaultClientCommit is the matching Cursor IDE commit hash for DefaultClientVersion.
+	DefaultClientCommit = "0fb762053c34788bb7760d5673f8a6d4c8589d50"
 
 	// UserAgent is the Cursor editor user agent used by the login endpoints.
 	UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Cursor/0.48.6 Chrome/132.0.6834.210 Electron/34.3.4 Safari/537.36"
@@ -40,8 +50,8 @@ func Hashed64Hex(input, salt string) string {
 	return hex.EncodeToString(h[:])
 }
 
-// obfuscateBytes mirrors the byte obfuscation from the Cursor client used inside
-// the x-cursor-checksum value.
+// obfuscateBytes mirrors the Jyh cipher byte obfuscation from the Cursor IDE client
+// used inside the x-cursor-checksum value.
 func obfuscateBytes(b []byte) {
 	t := byte(165)
 	for i := range b {
@@ -51,27 +61,49 @@ func obfuscateBytes(b []byte) {
 }
 
 // Checksum builds the x-cursor-checksum header value for the given token.
-//
-// The timestamp block must match the Cursor client byte for byte or the API
-// answers every chat request with ERROR_UNAUTHORIZED. Two details are easy to
-// get wrong: the counter is floor(unixMillis/1e6) — a ~16.7 minute tick, not a
-// second counter — and the six bytes are not a plain big-endian encoding, they
-// repeat the low half of the counter in the client's own order.
 func Checksum(token string) string {
-	machineID := Hashed64Hex(token, "machineId")
-	macMachineID := Hashed64Hex(token, "macMachineId")
+	return ChecksumWithMachineID(token, "")
+}
 
-	ts := uint32(time.Now().UnixMilli() / 1e6)
+// ChecksumWithMachineID builds the x-cursor-checksum header value (Jyh cipher:
+// URL-safe unpadded base64 of obfuscated 6-byte big-endian floor(unixMillis/1e6)
+// concatenated with machineID).
+func ChecksumWithMachineID(token, machineID string) string {
+	cleanToken := NormalizeToken(token)
+	effectiveMachineID := strings.TrimSpace(machineID)
+	if effectiveMachineID == "" {
+		effectiveMachineID = Hashed64Hex(cleanToken, "machineId")
+	}
+
+	ts := uint64(time.Now().UnixMilli() / 1_000_000)
 	b := []byte{
-		byte(ts >> 8),
-		byte(ts),
+		byte(ts >> 40),
+		byte(ts >> 32),
 		byte(ts >> 24),
 		byte(ts >> 16),
 		byte(ts >> 8),
 		byte(ts),
 	}
 	obfuscateBytes(b)
-	return base64.StdEncoding.EncodeToString(b) + machineID + "/" + macMachineID
+	return base64.RawURLEncoding.EncodeToString(b) + effectiveMachineID
+}
+
+func cursorClientOS() string {
+	switch runtime.GOOS {
+	case "darwin":
+		return "macos"
+	case "windows":
+		return "windows"
+	default:
+		return "linux"
+	}
+}
+
+func cursorClientArch() string {
+	if runtime.GOARCH == "arm64" {
+		return "aarch64"
+	}
+	return "x64"
 }
 
 // uuidV5 replicates uuid v5 (SHA-1, name-based, RFC 4122 §4.3), which the Cursor
@@ -107,9 +139,7 @@ func NormalizeToken(token string) string {
 	return strings.TrimSpace(token)
 }
 
-// ApplyHeaders sets the Cursor client headers on r. streaming selects the
-// Connect streaming content type used by the chat endpoint; the unary form is
-// used by AvailableModels.
+// ApplyHeaders sets the Cursor client headers on r for legacy AIServer calls.
 func ApplyHeaders(r *http.Request, token string, streaming bool) {
 	ApplyHeadersWithHost(r, token, streaming, apiHostHeader)
 }
@@ -123,8 +153,13 @@ func ApplyHeadersWithHost(r *http.Request, token string, streaming bool, host st
 	r.Header.Set("user-agent", "connect-es/1.6.1")
 	r.Header.Set("x-cursor-checksum", Checksum(token))
 	r.Header.Set("x-cursor-client-version", DefaultClientVersion)
+	r.Header.Set("x-cursor-client-commit", DefaultClientCommit)
+	r.Header.Set("x-cursor-client-type", "ide")
+	r.Header.Set("x-cursor-client-os", cursorClientOS())
+	r.Header.Set("x-cursor-client-arch", cursorClientArch())
+	r.Header.Set("x-cursor-client-device-type", "desktop")
 	r.Header.Set("x-cursor-config-version", uuid.NewString())
-	r.Header.Set("x-cursor-timezone", "Asia/Shanghai")
+	r.Header.Set("x-cursor-timezone", "UTC")
 	r.Header.Set("x-ghost-mode", "true")
 	if host != "" {
 		r.Host = host
@@ -140,5 +175,44 @@ func ApplyHeadersWithHost(r *http.Request, token string, streaming bool, host st
 		return
 	}
 	r.Header.Set("accept-encoding", "gzip")
+	r.Header.Set("content-type", "application/proto")
+}
+
+// ApplyAgentHeaders sets the Cursor IDE AgentService headers on r.
+// When streaming is true (AgentService/Run), Connect streaming headers are sent;
+// when streaming is false (AgentService/GetUsableModels), unary application/proto headers are sent.
+func ApplyAgentHeaders(r *http.Request, token, machineID string, streaming bool) {
+	ApplyAgentHeadersWithHost(r, token, machineID, streaming, AgentHostHeader)
+}
+
+// ApplyAgentHeadersWithHost sets Cursor AgentService headers with an optional Host override.
+func ApplyAgentHeadersWithHost(r *http.Request, token, machineID string, streaming bool, host string) {
+	cleanToken := NormalizeToken(token)
+	r.Header.Set("authorization", "Bearer "+cleanToken)
+	r.Header.Set("user-agent", "connect-es/1.6.1")
+	r.Header.Set("x-amzn-trace-id", "Root="+uuid.NewString())
+	r.Header.Set("x-client-key", Hashed64Hex(cleanToken, ""))
+	r.Header.Set("x-cursor-checksum", ChecksumWithMachineID(cleanToken, machineID))
+	r.Header.Set("x-cursor-client-version", DefaultClientVersion)
+	r.Header.Set("x-cursor-client-commit", DefaultClientCommit)
+	r.Header.Set("x-cursor-client-type", "ide")
+	r.Header.Set("x-cursor-client-os", cursorClientOS())
+	r.Header.Set("x-cursor-client-arch", cursorClientArch())
+	r.Header.Set("x-cursor-client-device-type", "desktop")
+	r.Header.Set("x-cursor-config-version", uuid.NewString())
+	r.Header.Set("x-cursor-timezone", "UTC")
+	r.Header.Set("x-ghost-mode", "true")
+	r.Header.Set("x-request-id", uuid.NewString())
+	r.Header.Set("x-session-id", SessionID(cleanToken))
+	if host != "" {
+		r.Host = host
+	}
+	if streaming {
+		r.Header.Set("connect-accept-encoding", "gzip")
+		r.Header.Set("connect-protocol-version", "1")
+		r.Header.Set("content-type", "application/connect+proto")
+		return
+	}
+	r.Header.Set("accept", "application/proto")
 	r.Header.Set("content-type", "application/proto")
 }

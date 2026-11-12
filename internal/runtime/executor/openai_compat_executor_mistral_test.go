@@ -291,3 +291,201 @@ func executeMistralChatTestRequest(t *testing.T, baseURL, payload string, source
 		return nil
 	}
 }
+
+func TestOpenAICompatExecutorMistralGLM53ReasoningEffortMapping(t *testing.T) {
+	var glmInfo *registry.ModelInfo
+	for _, m := range registry.GetMistralModels() {
+		if m.ID == "zai-glm-5-3-flash" {
+			glmInfo = m
+			break
+		}
+	}
+	if glmInfo == nil {
+		t.Fatal("zai-glm-5-3-flash missing from GetMistralModels()")
+	}
+
+	for _, tc := range []struct {
+		effort string
+		want   string
+	}{
+		{effort: "medium", want: "high"},
+		{effort: "minimal", want: "low"},
+		{effort: "low", want: "low"},
+		{effort: "high", want: "high"},
+		{effort: "xhigh", want: "max"},
+		{effort: "max", want: "max"},
+		{effort: "none", want: ""},
+	} {
+		for _, stream := range []bool{false, true} {
+			t.Run(fmt.Sprintf("effort=%s/stream=%t", tc.effort, stream), func(t *testing.T) {
+				bodies := make(chan []byte, 1)
+				proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					body, _ := io.ReadAll(r.Body)
+					bodies <- body
+					effRes := ojson.GetBytes(body, "reasoning_effort")
+					if effRes.Exists() {
+						got := effRes.String()
+						if got != "low" && got != "high" && got != "max" {
+							w.WriteHeader(http.StatusBadRequest)
+							_, _ = io.WriteString(w, `{"object":"error","message":"reasoning_effort not supported; supported values: ['low', 'high', 'max']","code":"3051"}`)
+							return
+						}
+					}
+					if stream {
+						w.Header().Set("Content-Type", "text/event-stream")
+						_, _ = io.WriteString(w, "data: {\"id\":\"chatcmpl-test\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+						return
+					}
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = io.WriteString(w, `{"id":"chatcmpl-test","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`)
+				}))
+				t.Cleanup(proxy.Close)
+
+				exec := NewOpenAICompatExecutor("openai-compatible-mistral", &config.Config{})
+				auth := &cliproxyauth.Auth{
+					Provider:   "openai-compatible-mistral",
+					ProxyURL:   proxy.URL,
+					Attributes: map[string]string{"base_url": "http://api.mistral.ai/v1", "api_key": "test-key"},
+				}
+				payload := fmt.Sprintf(`{"model":"zai-glm-5-3-flash","reasoning":{"effort":%q},"input":[{"role":"developer","content":"Be concise"},{"role":"user","content":"Say OK"}]}`, tc.effort)
+				req := cliproxyexecutor.Request{
+					Model:    "zai-glm-5-3-flash",
+					Payload:  []byte(payload),
+					Metadata: map[string]any{"cliproxy.resolved_api_key_model_info": glmInfo},
+				}
+				opts := cliproxyexecutor.Options{
+					SourceFormat:   sdktranslator.FormatOpenAIResponse,
+					ResponseFormat: sdktranslator.FormatOpenAIResponse,
+					Stream:         stream,
+				}
+				if stream {
+					result, errStream := exec.ExecuteStream(context.Background(), auth, req, opts)
+					if errStream != nil {
+						t.Fatalf("ExecuteStream: %v", errStream)
+					}
+					for chunk := range result.Chunks {
+						if chunk.Err != nil {
+							t.Fatalf("stream chunk: %v", chunk.Err)
+						}
+					}
+				} else if _, errExec := exec.Execute(context.Background(), auth, req, opts); errExec != nil {
+					t.Fatalf("Execute: %v", errExec)
+				}
+
+				body := <-bodies
+				effRes := ojson.GetBytes(body, "reasoning_effort")
+				if tc.want == "" {
+					if effRes.Exists() {
+						t.Fatalf("expected reasoning_effort omitted, got %q in %s", effRes.String(), body)
+					}
+				} else if effRes.String() != tc.want {
+					t.Fatalf("reasoning_effort = %q, want %q; body=%s", effRes.String(), tc.want, body)
+				}
+				if gotRole := ojson.GetBytes(body, "messages.0.role").String(); gotRole != "system" {
+					t.Fatalf("messages.0.role = %q, want system; body=%s", gotRole, body)
+				}
+			})
+		}
+	}
+}
+
+func TestOpenAICompatExecutor9RouterParitySanitizationAndOpencodeUA(t *testing.T) {
+	t.Run("opencode_overrides_python_user_agent_and_sets_session", func(t *testing.T) {
+		var gotUA, gotSession string
+		var gotBody []byte
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gotUA = r.Header.Get("User-Agent")
+			gotSession = r.Header.Get("x-opencode-session")
+			gotBody, _ = io.ReadAll(r.Body)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"id":"chatcmpl-oc","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`)
+		}))
+		t.Cleanup(server.Close)
+
+		exec := NewOpenAICompatExecutor("opencode", &config.Config{})
+		auth := &cliproxyauth.Auth{
+			ID:         "oc-test",
+			Provider:   "opencode",
+			ProxyURL:   server.URL,
+			Attributes: map[string]string{"base_url": "http://opencode.ai/zen/go/v1", "api_key": "oc-key"},
+		}
+		textOnlyInfo := &registry.ModelInfo{
+			ID:                       "deepseek-v4-flash",
+			SupportedInputModalities: []string{"text"},
+		}
+		payload := `{
+			"model":"deepseek-v4-flash",
+			"messages":[
+				{"role":"user","content":[{"type":"text","text":"prev"},{"type":"image_url","image_url":{"url":"data:image/png;base64,AAAA"}}]},
+				{"role":"assistant","content":"ack","encrypted_content":"enc_123"},
+				{"role":"user","content":[{"type":"text","text":"now"},{"type":"image_url","image_url":{"url":"data:image/png;base64,BBBB"}}]}
+			],
+			"tools":[
+				{"type":"function","function":{"name":"read_file","parameters":{"type":"object"}}},
+				{"type":"function","function":{"name":"read_file","parameters":{"type":"object"}}},
+				{"type":"function","function":{"name":"bash","parameters":{"type":"object"}}}
+			]
+		}`
+		req := cliproxyexecutor.Request{
+			Model:    "deepseek-v4-flash",
+			Payload:  []byte(payload),
+			Metadata: map[string]any{"cliproxy.resolved_api_key_model_info": textOnlyInfo},
+		}
+		opts := cliproxyexecutor.Options{
+			SourceFormat:   sdktranslator.FromString("openai"),
+			ResponseFormat: sdktranslator.FromString("openai"),
+			Headers:        http.Header{"User-Agent": []string{"Python-urllib/3.12"}},
+		}
+		if _, err := exec.Execute(context.Background(), auth, req, opts); err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		if gotUA != "opencode/1.0.0" {
+			t.Fatalf("User-Agent = %q, want opencode/1.0.0", gotUA)
+		}
+		if gotSession == "" {
+			t.Fatal("expected non-empty x-opencode-session header")
+		}
+		if ojson.GetBytes(gotBody, "messages.1.encrypted_content").Exists() {
+			t.Fatalf("expected encrypted_content stripped, body=%s", gotBody)
+		}
+		if gotTools := len(ojson.GetBytes(gotBody, "tools").Array()); gotTools != 2 {
+			t.Fatalf("expected deduplicated tools length 2, got %d; body=%s", gotTools, gotBody)
+		}
+		if prev := ojson.GetBytes(gotBody, "messages.0.content.1.text").String(); prev != "[Previous image omitted from context.]" {
+			t.Fatalf("historical image placeholder = %q; body=%s", prev, gotBody)
+		}
+		if curr := ojson.GetBytes(gotBody, "messages.2.content.1.text").String(); curr != "[image omitted: model has no vision support]" {
+			t.Fatalf("current image placeholder = %q; body=%s", curr, gotBody)
+		}
+	})
+
+	t.Run("rejects_empty_zero_usage_responses_completion", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"status\":\"in_progress\",\"output\":[]}}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"status\":\"completed\",\"output\":[],\"output_text\":\"\",\"usage\":{\"input_tokens\":0,\"output_tokens\":0,\"total_tokens\":0}}}\n\n")
+		}))
+		t.Cleanup(server.Close)
+
+		cfg := &config.Config{
+			OpenAICompatibility: []config.OpenAICompatibility{
+				{Name: "broken-proxy", BaseURL: server.URL, WireAPI: "responses"},
+			},
+		}
+		exec := NewOpenAICompatExecutor("openai-compatible-broken-proxy", cfg)
+		auth := &cliproxyauth.Auth{
+			Provider:   "openai-compatible-broken-proxy",
+			Attributes: map[string]string{"base_url": server.URL, "api_key": "k", "compat_name": "broken-proxy", "wire_api": "responses"},
+		}
+		req := cliproxyexecutor.Request{
+			Model:   "glm-5.3-flash",
+			Payload: []byte(`{"model":"glm-5.3-flash","input":[{"role":"user","content":"hi"}]}`),
+		}
+		opts := cliproxyexecutor.Options{
+			SourceFormat:   sdktranslator.FormatOpenAIResponse,
+			ResponseFormat: sdktranslator.FormatOpenAIResponse,
+		}
+		if _, err := exec.Execute(context.Background(), auth, req, opts); err == nil {
+			t.Fatal("expected error on fake-200 zero-usage empty response.completed")
+		}
+	})
+}

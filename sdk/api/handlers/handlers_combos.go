@@ -11,11 +11,32 @@ import (
 	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/net/context"
 )
 
 var comboRoundRobinCounters sync.Map // map[string]*atomic.Uint64
+
+func stripComboContextMarker(model string) string {
+	trimmed := strings.TrimSpace(model)
+	for len(trimmed) > 4 && strings.EqualFold(trimmed[len(trimmed)-4:], "[1m]") {
+		trimmed = strings.TrimSpace(trimmed[:len(trimmed)-4])
+	}
+	return trimmed
+}
+
+func parseComboLookupName(modelName string) (baseName string, rawSuffix string, hasSuffix bool) {
+	cleaned := stripComboContextMarker(modelName)
+	if cleaned == "" {
+		return "", "", false
+	}
+	parsed := thinking.ParseSuffix(cleaned)
+	baseName = stripComboContextMarker(strings.TrimSpace(parsed.ModelName))
+	rawSuffix = strings.TrimSpace(parsed.RawSuffix)
+	return baseName, rawSuffix, parsed.HasSuffix && rawSuffix != ""
+}
 
 func (h *BaseAPIHandler) resolveCombo(modelName string, execOptions modelExecutionOptions) (*config.ComboConfig, bool) {
 	if h == nil {
@@ -25,12 +46,12 @@ func (h *BaseAPIHandler) resolveCombo(modelName string, execOptions modelExecuti
 	if cfg == nil || len(cfg.Combos) == 0 {
 		return nil, false
 	}
-	trimmed := strings.TrimSpace(modelName)
-	if trimmed == "" {
+	baseName, rawSuffix, hasSuffix := parseComboLookupName(modelName)
+	if baseName == "" {
 		return nil, false
 	}
-	trimmedKey := strings.ToLower(trimmed)
-	if execOptions.VisitedCombos != nil && execOptions.VisitedCombos[trimmedKey] {
+	baseKey := strings.ToLower(baseName)
+	if execOptions.VisitedCombos != nil && execOptions.VisitedCombos[baseKey] {
 		return nil, false
 	}
 	for i := range cfg.Combos {
@@ -42,13 +63,26 @@ func (h *BaseAPIHandler) resolveCombo(modelName string, execOptions modelExecuti
 		if name == "" || len(combo.Models) == 0 {
 			continue
 		}
-		if strings.EqualFold(name, trimmed) {
+		if strings.EqualFold(name, baseName) {
 			nameKey := strings.ToLower(name)
 			if execOptions.VisitedCombos != nil && execOptions.VisitedCombos[nameKey] {
 				return nil, false
 			}
 			copied := *combo
-			copied.Models = append([]string(nil), combo.Models...)
+			copied.Models = make([]string, 0, len(combo.Models))
+			for _, candidate := range combo.Models {
+				cand := strings.TrimSpace(candidate)
+				if cand == "" {
+					continue
+				}
+				if hasSuffix && !thinking.ParseSuffix(cand).HasSuffix {
+					cand = cand + "(" + rawSuffix + ")"
+				}
+				copied.Models = append(copied.Models, cand)
+			}
+			if len(copied.Models) == 0 {
+				return nil, false
+			}
 			return &copied, true
 		}
 	}
@@ -126,6 +160,150 @@ func shouldFallbackComboError(errMsg *interfaces.ErrorMessage) bool {
 	return true
 }
 
+func itemContainsImageModality(item ojson.Result) bool {
+	if !item.IsObject() {
+		return item.Type == ojson.String && strings.Contains(item.String(), "data:image/")
+	}
+	itemType := strings.ToLower(strings.TrimSpace(item.Get("type").String()))
+	switch itemType {
+	case "image_url", "input_image", "image":
+		return true
+	}
+	if item.Get("image_url").Exists() {
+		return true
+	}
+	if mt := strings.ToLower(strings.TrimSpace(item.Get("source.media_type").String())); strings.HasPrefix(mt, "image/") {
+		return true
+	}
+	if mt := strings.ToLower(strings.TrimSpace(item.Get("inlineData.mimeType").String())); strings.HasPrefix(mt, "image/") {
+		return true
+	}
+	if mt := strings.ToLower(strings.TrimSpace(item.Get("inline_data.mime_type").String())); strings.HasPrefix(mt, "image/") {
+		return true
+	}
+	for _, field := range []string{"content", "parts"} {
+		sub := item.Get(field)
+		if sub.Type == ojson.String && strings.Contains(sub.String(), "data:image/") {
+			return true
+		}
+		if sub.IsArray() {
+			for _, part := range sub.Array() {
+				if itemContainsImageModality(part) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// payloadRequiresVisionInTrailingTurn mirrors 9router detectRequiredCapabilities()
+// (open-sse/services/combo.js:63-138): only inspect the trailing user run after the
+// last assistant/model/tool turn so historical images don't permanently pin the combo.
+func payloadRequiresVisionInTrailingTurn(rawJSON []byte) bool {
+	if len(rawJSON) == 0 || !ojson.ValidBytes(rawJSON) {
+		return false
+	}
+	for _, key := range []string{"messages", "input", "contents"} {
+		list := ojson.GetBytesNoCopy(rawJSON, key)
+		if !list.IsArray() {
+			continue
+		}
+		items := list.Array()
+		if len(items) == 0 {
+			continue
+		}
+		lastNonUser := -1
+		for i, item := range items {
+			role := strings.ToLower(strings.TrimSpace(item.Get("role").String()))
+			itype := strings.ToLower(strings.TrimSpace(item.Get("type").String()))
+			if role == "assistant" || role == "model" || role == "tool" ||
+				itype == "function_call" || itype == "function_call_output" || itype == "custom_tool_call_output" {
+				lastNonUser = i
+			}
+		}
+		for i := lastNonUser + 1; i < len(items); i++ {
+			if itemContainsImageModality(items[i]) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func lookupComboCandidateModelInfo(candidate string) *registry.ModelInfo {
+	base, _, _ := parseComboLookupName(candidate)
+	if base == "" {
+		return nil
+	}
+	provider := ""
+	modelID := base
+	if p, rest, ok := strings.Cut(base, "/"); ok && strings.TrimSpace(rest) != "" {
+		provider = strings.ToLower(strings.TrimSpace(p))
+		modelID = strings.TrimSpace(rest)
+	}
+	if provider != "" {
+		for _, provKey := range []string{provider, "openai-compatible-" + provider} {
+			if info := registry.LookupModelInfo(modelID, provKey); info != nil && len(info.SupportedInputModalities) > 0 {
+				return info
+			}
+		}
+		if info := registry.LookupStaticModelInfoByChannel(modelID, provider); info != nil && len(info.SupportedInputModalities) > 0 {
+			return info
+		}
+	}
+	if info := registry.LookupModelInfo(modelID); info != nil && len(info.SupportedInputModalities) > 0 {
+		return info
+	}
+	return registry.LookupStaticModelInfo(modelID)
+}
+
+// reorderComboCandidatesByVision mirrors 9router reorderByCapabilities()
+// (open-sse/services/combo.js:167-184, 285-294): when the trailing user turn carries
+// an image, stably float vision-capable (and unknown/custom) candidates ahead of
+// explicitly text-only candidates without dropping any fallback candidate.
+func reorderComboCandidatesByVision(comboName string, candidates []string, rawJSON []byte) []string {
+	if len(candidates) <= 1 || !payloadRequiresVisionInTrailingTurn(rawJSON) {
+		return candidates
+	}
+	visionTier := make([]string, 0, len(candidates))
+	textOnlyTier := make([]string, 0, len(candidates))
+	for _, cand := range candidates {
+		info := lookupComboCandidateModelInfo(cand)
+		if info != nil && len(info.SupportedInputModalities) > 0 && (!info.UserDefined || info.ExplicitInputModalities) {
+			hasVision := false
+			for _, m := range info.SupportedInputModalities {
+				switch strings.ToLower(strings.TrimSpace(m)) {
+				case "image", "images", "vision":
+					hasVision = true
+				}
+			}
+			if !hasVision {
+				textOnlyTier = append(textOnlyTier, cand)
+				continue
+			}
+		}
+		visionTier = append(visionTier, cand)
+	}
+	if len(textOnlyTier) == 0 || len(visionTier) == 0 {
+		return candidates
+	}
+	reordered := make([]string, 0, len(candidates))
+	reordered = append(reordered, visionTier...)
+	reordered = append(reordered, textOnlyTier...)
+	changed := false
+	for i := range candidates {
+		if candidates[i] != reordered[i] {
+			changed = true
+			break
+		}
+	}
+	if changed {
+		log.Infof("🔀 [COMBO] %q: auto-switched candidate order for [vision] -> %v", comboName, reordered)
+	}
+	return reordered
+}
+
 func (h *BaseAPIHandler) executeComboWithAuthManagerFormats(
 	ctx context.Context,
 	combo *config.ComboConfig,
@@ -135,7 +313,7 @@ func (h *BaseAPIHandler) executeComboWithAuthManagerFormats(
 	allowImageModel bool,
 	execOptions modelExecutionOptions,
 ) ([]byte, http.Header, *interfaces.ErrorMessage) {
-	candidates := comboOrderedCandidates(combo)
+	candidates := reorderComboCandidatesByVision(combo.Name, comboOrderedCandidates(combo), rawJSON)
 	if len(candidates) == 0 {
 		return nil, nil, &interfaces.ErrorMessage{
 			StatusCode: http.StatusBadRequest,
@@ -178,7 +356,7 @@ func (h *BaseAPIHandler) executeComboStreamWithAuthManagerFormats(
 	allowImageModel bool,
 	execOptions modelExecutionOptions,
 ) (<-chan []byte, http.Header, <-chan *interfaces.ErrorMessage) {
-	candidates := comboOrderedCandidates(combo)
+	candidates := reorderComboCandidatesByVision(combo.Name, comboOrderedCandidates(combo), rawJSON)
 	if len(candidates) == 0 {
 		errChan := make(chan *interfaces.ErrorMessage, 1)
 		errChan <- &interfaces.ErrorMessage{

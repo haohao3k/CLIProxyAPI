@@ -54,6 +54,53 @@ func NormalizeZAIThinkingDoc(doc *ojson.Doc) bool {
 	return true
 }
 
+// ShouldNormalizeChatDeveloperRole reports whether a Chat Completions request
+// should normalize OpenAI Responses "developer" message roles to "system".
+// Almost all non-OpenAI /chat/completions upstreams (Z.ai, Mistral, OpenCode,
+// DeepSeek, Moonshot/Kimi, Qwen/DashScope, Groq, Cerebras, OpenRouter, custom
+// GLM/DeepSeek proxies like zcode/workbuddy, etc.) reject role="developer",
+// whereas native OpenAI Chat Completions preserves it.
+func ShouldNormalizeChatDeveloperRole(provider, baseURL, baseModel string) bool {
+	if parsed, errParse := url.Parse(strings.TrimSpace(baseURL)); errParse == nil {
+		host := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
+		if host == "api.openai.com" || strings.HasSuffix(host, ".openai.com") || strings.HasSuffix(host, ".openai.azure.com") {
+			return false
+		}
+		for _, suffix := range []string{
+			"z.ai", "bigmodel.cn", "mistral.ai", "opencode.ai",
+			"deepseek.com", "groq.com", "cerebras.ai", "moonshot.ai", "moonshot.cn",
+			"openrouter.ai", "aliyuncs.com", "together.xyz", "fireworks.ai",
+			"sambanova.ai", "siliconflow.cn", "siliconflow.com", "volces.com", "x.ai",
+		} {
+			if host == suffix || strings.HasSuffix(host, "."+suffix) {
+				return true
+			}
+		}
+	}
+
+	prov := strings.ToLower(strings.TrimSpace(provider))
+	prov = strings.TrimPrefix(prov, "openai-compatible-")
+	switch prov {
+	case "zai", "z.ai", "glm", "opencode", "opencode-go", "mistral",
+		"zcode", "zcode-proxy", "workbuddy", "deepseek", "groq", "cerebras",
+		"moonshot", "kimi", "qwen", "dashscope", "openrouter", "together",
+		"fireworks", "sambanova", "siliconflow", "volces", "nvidia", "xai":
+		return true
+	}
+
+	model := strings.ToLower(strings.TrimSpace(baseModel))
+	for _, prefix := range []string{
+		"glm-", "zai-", "deepseek-", "mistral-", "magistral-", "codestral-",
+		"devstral-", "ministral-", "qwen", "kimi", "moonshot", "minimax",
+		"claude", "gemini", "llama", "gemma",
+	} {
+		if strings.HasPrefix(model, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 // NormalizeChatDeveloperRoleDoc converts OpenAI Responses "developer" message roles
 // into standard Chat Completions "system" roles for non-OpenAI chat upstreams (such
 // as Z.ai GLM Coding PaaS v4 and OpenCode Go /chat/completions) that reject

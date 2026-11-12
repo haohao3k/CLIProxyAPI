@@ -106,9 +106,9 @@ func opencodeModel(id, displayName string, contextLength, maxCompletionTokens in
 
 var staticOpencodeModels = []*ModelInfo{
 	// Z.ai GLM family
-	opencodeModel("glm-5.3-flash", "GLM-5.3 Flash", 204800, 65536, opencodeStandardReasoningLevels, true, false),
-	opencodeModel("glm-5.3", "GLM-5.3", 204800, 131072, opencodeStandardReasoningLevels, true, false),
-	opencodeModel("glm-5.2", "GLM-5.2", 204800, 131072, opencodeStandardReasoningLevels, true, false),
+	opencodeModel("glm-5.3-flash", "GLM-5.3 Flash", 1000000, 131072, opencodeStandardReasoningLevels, true, true),
+	opencodeModel("glm-5.3", "GLM-5.3", 1000000, 131072, opencodeStandardReasoningLevels, true, false),
+	opencodeModel("glm-5.2", "GLM-5.2", 1000000, 131072, opencodeStandardReasoningLevels, true, false),
 	opencodeModel("glm-5.1", "GLM-5.1", 204800, 131072, opencodeStandardReasoningLevels, true, false),
 	opencodeModel("glm-5", "GLM-5", 204800, 131072, opencodeStandardReasoningLevels, true, false),
 
@@ -122,7 +122,7 @@ var staticOpencodeModels = []*ModelInfo{
 	opencodeModel("deepseek-v4-pro", "DeepSeek V4 Pro", 1000000, 384000, opencodeDeepSeekReasoningLevels, false, false),
 	opencodeModel("deepseek-v4-flash", "DeepSeek V4 Flash", 1000000, 384000, opencodeDeepSeekReasoningLevels, false, false),
 	opencodeModel("deepseek-v4-flash-vision-exp", "DeepSeek V4 Flash Vision Exp", 1000000, 384000, opencodeDeepSeekReasoningLevels, false, true),
-	opencodeModel("deepseek-v4.1-flash", "DeepSeek V4.1 Flash", 1000000, 384000, opencodeDeepSeekReasoningLevels, true, false),
+	opencodeModel("deepseek-v4.1-flash", "DeepSeek V4.1 Flash", 1000000, 384000, opencodeDeepSeekReasoningLevels, true, true),
 	opencodeModel("deepseek-flash", "DeepSeek Flash", 262144, 65536, opencodeDeepSeekReasoningLevels, true, false),
 
 	// Meituan LongCat family

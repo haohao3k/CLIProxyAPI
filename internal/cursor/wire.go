@@ -198,11 +198,7 @@ func (e *StreamError) HTTPStatus() int {
 
 // reasonHint annotates Cursor codes whose own message points the wrong way.
 var reasonHint = map[string]string{
-	// Cursor reuses this bucket for Auto and the composer-* models, and its text
-	// tells you to update the client. Bumping x-cursor-client-version changes
-	// nothing: those models moved to a request schema this package does not
-	// encode. Pick a named model instead.
-	"ERROR_GPT_4_VISION_PREVIEW_RATE_LIMIT": "(this provider cannot drive Auto/composer-* models; use a named model)",
+	"ERROR_GPT_4_VISION_PREVIEW_RATE_LIMIT": "(legacy ChatService rejected this model; text/tool requests use AgentService automatically, while image attachments fall back to ChatService)",
 }
 
 // parseEndStream returns the error carried by an end-of-stream frame, or nil

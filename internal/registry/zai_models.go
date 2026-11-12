@@ -12,7 +12,7 @@ const zaiModelsCreated = 1785600000
 
 // zaiThinkingLevels models GLM's binary thinking switch on the OpenAI
 // endpoint: "none" disables thinking, any other level enables it.
-var zaiThinkingLevels = []string{"none", "low", "medium", "high"}
+var zaiThinkingLevels = []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"}
 
 func zaiModel(id, displayName string, contextLength, maxCompletion int, vision bool) *ModelInfo {
 	inputs := []string{"text"}
@@ -35,9 +35,9 @@ func zaiModel(id, displayName string, contextLength, maxCompletion int, vision b
 }
 
 var staticZAIModels = []*ModelInfo{
-	zaiModel("glm-5.3", "GLM 5.3", 200000, 128000, false),
-	zaiModel("glm-5.3-flash", "GLM 5.3 Flash (Vision)", 200000, 128000, true),
-	zaiModel("glm-5.2", "GLM 5.2", 200000, 128000, false),
+	zaiModel("glm-5.3", "GLM 5.3", 1000000, 128000, false),
+	zaiModel("glm-5.3-flash", "GLM 5.3 Flash (Vision)", 1000000, 128000, true),
+	zaiModel("glm-5.2", "GLM 5.2", 1000000, 128000, false),
 	zaiModel("glm-5.1", "GLM 5.1", 200000, 128000, false),
 	zaiModel("glm-5-turbo", "GLM 5 Turbo", 200000, 128000, false),
 	zaiModel("glm-5", "GLM 5", 200000, 128000, false),

@@ -285,7 +285,15 @@ func resolveProviderQualifiedModel(baseModel, resolvedModelName string) ([]strin
 		candidateKeys = []string{prefix, util.OpenAICompatibleProviderKey(prefix)}
 	}
 
-	subProviders := util.GetProviderName(rest)
+	restParsed := thinking.ParseSuffix(rest)
+	restBase := stripComboContextMarker(strings.TrimSpace(restParsed.ModelName))
+	if restBase == "" {
+		restBase = rest
+	}
+	subProviders := util.GetProviderName(restBase)
+	if len(subProviders) == 0 && restBase != rest {
+		subProviders = util.GetProviderName(rest)
+	}
 	matched := make([]string, 0, len(candidateKeys))
 	for _, p := range subProviders {
 		for _, want := range candidateKeys {
@@ -295,14 +303,34 @@ func resolveProviderQualifiedModel(baseModel, resolvedModelName string) ([]strin
 			}
 		}
 	}
+	if len(matched) == 0 && (prefix == "cursor" || prefix == "cu") && !strings.HasPrefix(strings.ToLower(restBase), "cursor-") {
+		altCandidates := []string{"cursor-" + restBase}
+		if strings.EqualFold(restBase, "auto") || strings.EqualFold(restBase, "default") {
+			altCandidates = append(altCandidates, "cursor-default", "cursor-auto", "cursor-auto-smart")
+		}
+		for _, alt := range altCandidates {
+			for _, p := range util.GetProviderName(alt) {
+				if strings.EqualFold(strings.TrimSpace(p), "cursor") {
+					matched = append(matched, p)
+					restBase = alt
+					break
+				}
+			}
+			if len(matched) > 0 {
+				break
+			}
+		}
+	}
 	if len(matched) == 0 {
 		return nil, ""
 	}
 
-	parsed := thinking.ParseSuffix(resolvedModelName)
-	nextResolved := rest
-	if parsed.HasSuffix {
-		nextResolved = fmt.Sprintf("%s(%s)", rest, parsed.RawSuffix)
+	parsed := thinking.ParseSuffix(stripComboContextMarker(resolvedModelName))
+	nextResolved := restBase
+	if parsed.HasSuffix && strings.TrimSpace(parsed.RawSuffix) != "" {
+		nextResolved = fmt.Sprintf("%s(%s)", restBase, strings.TrimSpace(parsed.RawSuffix))
+	} else if restParsed.HasSuffix && strings.TrimSpace(restParsed.RawSuffix) != "" {
+		nextResolved = fmt.Sprintf("%s(%s)", restBase, strings.TrimSpace(restParsed.RawSuffix))
 	}
 	return matched, nextResolved
 }

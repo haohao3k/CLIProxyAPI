@@ -112,3 +112,40 @@ func TestCursorBuildUpstreamRequestAppliesPayloadRulesLast(t *testing.T) {
 		t.Fatalf("native body must carry the normalized model id")
 	}
 }
+
+func TestCursorBuildUpstreamPlanResolvesEffortVariants(t *testing.T) {
+	exec := NewCursorExecutor(&config.Config{})
+
+	// 1. Base family model + Responses API reasoning.effort="high" -> deepseek-v41-flash-1017-high
+	req := cliproxyexecutor.Request{
+		Model:   "cursor-deepseek-v41-flash-1017",
+		Payload: []byte(`{"model":"cursor-deepseek-v41-flash-1017","reasoning":{"effort":"high"},"input":[{"role":"user","content":"hello"}]}`),
+	}
+	opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatOpenAIResponse}
+	plan, err := exec.buildUpstreamPlan(context.Background(), req, opts, true)
+	if err != nil {
+		t.Fatalf("buildUpstreamPlan() error = %v", err)
+	}
+	if !plan.useAgent {
+		t.Fatalf("expected AgentService path for text request")
+	}
+	if plan.upstreamModel != "deepseek-v41-flash-1017-high" {
+		t.Fatalf("upstreamModel = %q, want deepseek-v41-flash-1017-high", plan.upstreamModel)
+	}
+	if !bytes.Contains(plan.agentFrame, []byte("deepseek-v41-flash-1017-high")) {
+		t.Fatalf("agentFrame missing resolved variant id")
+	}
+
+	// 2. Explicit variant in model name wins over default payload reasoning.effort="medium"
+	reqExplicit := cliproxyexecutor.Request{
+		Model:   "cursor-deepseek-v41-flash-1017-max",
+		Payload: []byte(`{"model":"cursor-deepseek-v41-flash-1017-max","reasoning":{"effort":"medium"},"input":[{"role":"user","content":"hello"}]}`),
+	}
+	planExplicit, err := exec.buildUpstreamPlan(context.Background(), reqExplicit, opts, true)
+	if err != nil {
+		t.Fatalf("buildUpstreamPlan(explicit) error = %v", err)
+	}
+	if planExplicit.upstreamModel != "deepseek-v41-flash-1017-max" {
+		t.Fatalf("explicit variant overridden: got %q, want deepseek-v41-flash-1017-max", planExplicit.upstreamModel)
+	}
+}

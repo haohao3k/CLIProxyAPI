@@ -30,6 +30,11 @@ func SanitizeMistralChatRequestDoc(doc *ojson.Doc, baseURL string) {
 	_ = doc.Delete("stream_options")
 	// Mistral rejects the client_metadata field some clients attach.
 	_ = doc.Delete("client_metadata")
+	if tools := doc.Get("tools"); tools.IsArray() && len(tools.Array()) == 0 {
+		_ = doc.Delete("tools")
+		_ = doc.Delete("tool_choice")
+	}
+	sanitizeMistralReasoningEffortDoc(doc)
 	messages := doc.Get("messages").Array()
 	// Pass 1 (forward): normalize OpenAI "developer" role and mid-conversation "system"
 	// roles so Mistral's strict union tag ('system'|'user'|'assistant'|'tool') and
@@ -56,11 +61,18 @@ func SanitizeMistralChatRequestDoc(doc *ojson.Doc, baseURL string) {
 		}
 	}
 
-	// Pass 2 (backward): strip assistant reasoning_content rejected by Mistral.
+	// Pass 2 (backward): strip assistant reasoning fields rejected by Mistral
+	// (mirrors 9router paramSupport.js: ["reasoning_content", "reasoning", "reasoning_details"]).
 	messages = doc.Get("messages").Array()
 	for i := len(messages) - 1; i >= 0; i-- {
 		message := messages[i]
-		if message.Get("role").String() != "assistant" || !message.Get("reasoning_content").Exists() {
+		if message.Get("role").String() != "assistant" {
+			continue
+		}
+		hasReasoning := message.Get("reasoning_content").Exists() ||
+			message.Get("reasoning").Exists() ||
+			message.Get("reasoning_details").Exists()
+		if !hasReasoning {
 			continue
 		}
 		path := fmt.Sprintf("messages.%d", i)
@@ -68,7 +80,48 @@ func SanitizeMistralChatRequestDoc(doc *ojson.Doc, baseURL string) {
 			_ = doc.Delete(path)
 		} else {
 			_ = doc.Delete(path + ".reasoning_content")
+			_ = doc.Delete(path + ".reasoning")
+			_ = doc.Delete(path + ".reasoning_details")
 		}
+	}
+}
+
+// sanitizeMistralReasoningEffortDoc normalizes or strips reasoning_effort for
+// Mistral models with strict per-model constraints:
+//   - zai-glm-5-3* / glm-5.3* on api.mistral.ai only accept ["low", "high", "max"]
+//     (sending "medium" or "none" fails with HTTP 400 code 3051).
+//   - non-reasoning partner/code models (deepseek-*, codestral-*, devstral-*,
+//     ministral-*) reject reasoning_effort altogether when configured via compat.
+func sanitizeMistralReasoningEffortDoc(doc *ojson.Doc) {
+	if doc == nil {
+		return
+	}
+	effortRes := doc.Get("reasoning_effort")
+	if !effortRes.Exists() {
+		return
+	}
+	model := strings.ToLower(strings.TrimSpace(doc.Get("model").String()))
+	effort := strings.ToLower(strings.TrimSpace(effortRes.String()))
+	if strings.HasPrefix(model, "zai-glm-5-3") || strings.HasPrefix(model, "glm-5.3") || strings.HasPrefix(model, "glm-5-3") {
+		switch effort {
+		case "", "none", "off":
+			_ = doc.Delete("reasoning_effort")
+		case "minimal", "low":
+			_ = doc.Set("reasoning_effort", "low")
+		case "medium", "high":
+			_ = doc.Set("reasoning_effort", "high")
+		case "xhigh", "max":
+			_ = doc.Set("reasoning_effort", "max")
+		default:
+			_ = doc.Set("reasoning_effort", "high")
+		}
+		return
+	}
+	if strings.HasPrefix(model, "deepseek-") ||
+		strings.HasPrefix(model, "codestral-") ||
+		strings.HasPrefix(model, "devstral-") ||
+		strings.HasPrefix(model, "ministral-") {
+		_ = doc.Delete("reasoning_effort")
 	}
 }
 
@@ -111,7 +164,7 @@ func isEmptyReasoningOnlyChatAssistant(message ojson.Result) bool {
 	reasoningOnly := true
 	message.ForEach(func(key, _ ojson.Result) bool {
 		switch key.String() {
-		case "role", "content", "reasoning_content":
+		case "role", "content", "reasoning_content", "reasoning", "reasoning_details":
 			return true
 		default:
 			reasoningOnly = false

@@ -284,3 +284,94 @@ func TestComboExecution_RoundRobinAndRecursionGuard(t *testing.T) {
 		t.Fatalf("geminiModels = %+v", geminiModels)
 	}
 }
+
+func TestComboExecution_SuffixContextMarkerAndVisionAutoSwitch(t *testing.T) {
+	var mu sync.Mutex
+	var attempted []string
+
+	manager := coreauth.NewManager(nil, nil, nil)
+	executor := &modelExecutionCaptureExecutor{
+		provider: "codex",
+		execute: func(ctx context.Context, auth *coreauth.Auth, req coreexecutor.Request, opts coreexecutor.Options) (coreexecutor.Response, error) {
+			mu.Lock()
+			attempted = append(attempted, req.Model)
+			mu.Unlock()
+			return coreexecutor.Response{Payload: []byte(fmt.Sprintf(`{"model":%q}`, req.Model))}, nil
+		},
+	}
+	manager.RegisterExecutor(executor)
+	auth := &coreauth.Auth{
+		ID:       "combo-vision-auth",
+		Provider: "codex",
+		Status:   coreauth.StatusActive,
+	}
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	registry.GetGlobalRegistry().RegisterClient(auth.ID, "codex", []*registry.ModelInfo{
+		{ID: "text-only-fast", SupportedInputModalities: []string{"text"}},
+		{ID: "vision-capable-backup", SupportedInputModalities: []string{"text", "image"}},
+	})
+	t.Cleanup(func() {
+		registry.GetGlobalRegistry().UnregisterClient(auth.ID)
+	})
+
+	cfg := &sdkconfig.SDKConfig{
+		Combos: []sdkconfig.ComboConfig{
+			{
+				Name:     "glm-5.3-flash",
+				Strategy: "fallback",
+				Models:   []string{"text-only-fast", "vision-capable-backup"},
+			},
+		},
+	}
+	handler := NewBaseAPIHandlers(cfg, manager)
+
+	// 1. Suffix + [1m] marker on text turn: keeps text-only-fast first AND propagates (high).
+	_, _, errMsg := handler.ExecuteWithAuthManager(
+		context.Background(),
+		"openai",
+		"glm-5.3-flash[1m](high)",
+		[]byte(`{"model":"glm-5.3-flash[1m](high)","messages":[{"role":"user","content":"hello"}]}`),
+		"",
+	)
+	if errMsg != nil {
+		t.Fatalf("suffix+[1m] combo execution failed: %+v", errMsg)
+	}
+
+	// 2. Trailing image turn: auto-switches to vision-capable-backup ahead of text-only-fast!
+	_, _, errMsg = handler.ExecuteWithAuthManager(
+		context.Background(),
+		"openai-response",
+		"glm-5.3-flash(medium)",
+		[]byte(`{"model":"glm-5.3-flash(medium)","input":[{"role":"user","content":[{"type":"input_text","text":"what is this?"},{"type":"input_image","image_url":"data:image/png;base64,AAAA"}]}]}`),
+		"",
+	)
+	if errMsg != nil {
+		t.Fatalf("vision combo execution failed: %+v", errMsg)
+	}
+
+	// 3. Historical image followed by text-only current turn: stays pinned to text-only-fast!
+	_, _, errMsg = handler.ExecuteWithAuthManager(
+		context.Background(),
+		"openai",
+		"glm-5.3-flash",
+		[]byte(`{"model":"glm-5.3-flash","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,AAAA"}}]},{"role":"assistant","content":"saw it"},{"role":"user","content":"thanks"}]}`),
+		"",
+	)
+	if errMsg != nil {
+		t.Fatalf("post-image text turn failed: %+v", errMsg)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	want := []string{"text-only-fast(high)", "vision-capable-backup(medium)", "text-only-fast"}
+	if len(attempted) != len(want) {
+		t.Fatalf("attempted = %v, want %v", attempted, want)
+	}
+	for i := range want {
+		if attempted[i] != want[i] {
+			t.Fatalf("step %d got %q, want %q (all=%v)", i, attempted[i], want[i], attempted)
+		}
+	}
+}

@@ -175,11 +175,17 @@ func (e *OpenAICompatExecutor) executeWithCredentials(ctx context.Context, auth 
 	}
 	if helps.IsZAIUpstream(e.Identifier(), baseURL) {
 		helps.NormalizeZAIThinkingDoc(doc)
-		if !useResponsesWire {
-			helps.NormalizeChatDeveloperRoleDoc(doc)
-		}
-	} else if !useResponsesWire && helps.IsOpencodeUpstream(e.Identifier(), auth, compat, baseURL) {
+	}
+	if !useResponsesWire && (helps.IsOpencodeUpstream(e.Identifier(), auth, compat, baseURL) || helps.ShouldNormalizeChatDeveloperRole(e.Identifier(), baseURL, baseModel)) {
 		helps.NormalizeChatDeveloperRoleDoc(doc)
+	}
+	resolvedModelInfo, _ := cliproxyauth.ResolvedModelInfo(req)
+	if opts.Alt != "responses/compact" {
+		if !useResponsesWire {
+			helps.SanitizeOpenAICompatChatRequestDoc(doc, e.Identifier(), compat, baseURL, baseModel, resolvedModelInfo)
+		} else {
+			helps.StripUnsupportedImageModalitiesDoc(doc, true, baseModel, e.Identifier(), resolvedModelInfo)
+		}
 	}
 
 	requestPath := helps.PayloadRequestPath(opts)
@@ -458,11 +464,17 @@ func (e *OpenAICompatExecutor) executeStreamWithCredentials(ctx context.Context,
 	}
 	if helps.IsZAIUpstream(e.Identifier(), baseURL) {
 		helps.NormalizeZAIThinkingDoc(doc)
-		if !useResponsesWire {
-			helps.NormalizeChatDeveloperRoleDoc(doc)
-		}
-	} else if !useResponsesWire && helps.IsOpencodeUpstream(e.Identifier(), auth, compat, baseURL) {
+	}
+	if !useResponsesWire && (helps.IsOpencodeUpstream(e.Identifier(), auth, compat, baseURL) || helps.ShouldNormalizeChatDeveloperRole(e.Identifier(), baseURL, baseModel)) {
 		helps.NormalizeChatDeveloperRoleDoc(doc)
+	}
+	resolvedModelInfo, _ := cliproxyauth.ResolvedModelInfo(req)
+	if opts.Alt != "responses/compact" {
+		if !useResponsesWire {
+			helps.SanitizeOpenAICompatChatRequestDoc(doc, e.Identifier(), compat, baseURL, baseModel, resolvedModelInfo)
+		} else {
+			helps.StripUnsupportedImageModalitiesDoc(doc, true, baseModel, e.Identifier(), resolvedModelInfo)
+		}
 	}
 
 	requestPath := helps.PayloadRequestPath(opts)
@@ -561,6 +573,7 @@ func (e *OpenAICompatExecutor) executeStreamWithCredentials(ctx context.Context,
 		var streamUsage helps.StreamUsageBuffer
 		var seenDone bool
 		var sawFinishReason bool
+		var sawResponsesDelta bool
 		var streamFailed bool
 		var streamAborted bool
 		var upstreamEvent string
@@ -637,7 +650,14 @@ func (e *OpenAICompatExecutor) executeStreamWithCredentials(ctx context.Context,
 				if eventType == "" {
 					eventType = eventName
 				}
+				if strings.Contains(eventType, "delta") || eventType == "response.output_item.added" {
+					sawResponsesDelta = true
+				}
 				responsesTerminal = helps.IsResponsesTerminalEventType(eventType)
+				if responsesTerminal && !sawResponsesDelta && helps.IsEmptyZeroUsageResponsesTerminal(ojson.GetBytesNoCopy(dataPayload, "response")) {
+					publishStreamError(statusErr{code: http.StatusBadGateway, msg: "upstream returned empty zero-usage responses completion"}, false)
+					return true
+				}
 			}
 
 			// Observe complete upstream frames before translation or downstream backpressure.

@@ -8,6 +8,11 @@ const mistralModelsCreated int64 = 1787000000
 // accept through the OpenAI-compatible reasoning_effort field.
 var mistralReasoningLevels = []string{"none", "low", "medium", "high"}
 
+// mistralGLMReasoningLevels accepts all canonical client effort levels during
+// validation; SanitizeMistralChatRequestDoc then maps them onto the exact 3-value
+// set (low | high | max) accepted by Mistral's zai-glm-5-3* backend.
+var mistralGLMReasoningLevels = []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"}
+
 // staticMistralModels is the built-in Mistral model list served for Mistral
 // credentials (API key import or Mistral Vibe browser sign-in). It is used
 // whenever the active models catalog has no "mistral" section, which is the
@@ -32,6 +37,11 @@ var staticMistralModels = []*ModelInfo{
 }
 
 func mistralModel(id, displayName, description string, contextLength, maxCompletionTokens int, reasoning bool) *ModelInfo {
+	inputs := []string{"text"}
+	switch id {
+	case "mistral-large-4", "mistral-large-latest", "zai-glm-5-3", "zai-glm-5-3-flash":
+		inputs = []string{"text", "image"}
+	}
 	info := &ModelInfo{
 		ID:                        id,
 		Object:                    "model",
@@ -43,11 +53,15 @@ func mistralModel(id, displayName, description string, contextLength, maxComplet
 		Description:               description,
 		ContextLength:             contextLength,
 		MaxCompletionTokens:       maxCompletionTokens,
-		SupportedInputModalities:  []string{"text"},
+		SupportedInputModalities:  inputs,
 		SupportedOutputModalities: []string{"text"},
 	}
 	if reasoning {
-		info.Thinking = &ThinkingSupport{ZeroAllowed: true, Levels: append([]string(nil), mistralReasoningLevels...)}
+		levels := mistralReasoningLevels
+		if id == "zai-glm-5-3" || id == "zai-glm-5-3-flash" {
+			levels = mistralGLMReasoningLevels
+		}
+		info.Thinking = &ThinkingSupport{ZeroAllowed: true, Levels: append([]string(nil), levels...)}
 	}
 	return info
 }
