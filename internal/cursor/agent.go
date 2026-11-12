@@ -809,7 +809,7 @@ func encodeMcpToolDefinition(tool AgentTool) []byte {
 	b = appendBytesField(b, 1, []byte(tool.Name))
 	b = appendBytesField(b, 2, []byte(tool.Description))
 	b = appendBytesField(b, 3, encodeAgentValue(schema))
-	b = appendBytesField(b, 4, []byte("9router"))
+	b = appendBytesField(b, 4, []byte("mcp"))
 	b = appendBytesField(b, 5, []byte(tool.Name))
 	return b
 }
@@ -913,32 +913,46 @@ func formatAgentMessageText(m AgentMessage) string {
 	return strings.Join(parts, "\n")
 }
 
-func encodeHistoryMessage(m AgentMessage) []byte {
-	textBody := formatAgentMessageText(m)
-	if strings.TrimSpace(textBody) == "" {
-		return nil
+func formatTranscriptEntry(m AgentMessage, toolNameByCallID map[string]string) string {
+	body := formatAgentMessageText(m)
+	if strings.TrimSpace(body) == "" {
+		return ""
 	}
-	text := appendBytesField(nil, 1, []byte(textBody))
-	inner := appendBytesField(nil, 1, appendBytesField(nil, 1, text))
-	if m.Role == "assistant" {
-		return appendBytesField(nil, 2, inner)
+	switch m.Role {
+	case "assistant":
+		return "[Assistant]:\n" + body
+	case "tool":
+		if name := strings.TrimSpace(toolNameByCallID[m.ToolCallID]); name != "" {
+			return fmt.Sprintf("[MCP Tool Result (%s)]:\n%s", name, body)
+		}
+		return "[MCP Tool Result]:\n" + body
+	default:
+		return "[User]:\n" + body
 	}
-	return appendBytesField(nil, 1, inner)
 }
 
 // BuildAgentRunFrame encodes the initial Connect-RPC frame for AgentService/Run.
-// System/developer prompts are folded into the user turn because RunRequest.custom_system_prompt
-// causes AgentService to return an empty turn. Multi-turn tool results at the end of
-// the conversation are preserved in chronological order without dropping prior tool calls.
+// System/developer prompts and multi-turn history are folded into user_message
+// because RunRequest with an empty ConversationStateStructure starts a fresh
+// stateless agent session (ignoring UserMessageAction.field_7 on Cursor 3.12+)
+// and RunRequest.custom_system_prompt causes AgentService to return an empty turn.
 func BuildAgentRunFrame(messages []AgentMessage, upstreamModel string, tools []AgentTool) []byte {
 	var sysParts []string
 	var chatMsgs []AgentMessage
+	toolNameByCallID := make(map[string]string)
 	for _, m := range messages {
 		if m.Role == "system" || m.Role == "developer" {
 			if strings.TrimSpace(m.Content) != "" {
 				sysParts = append(sysParts, m.Content)
 			}
 			continue
+		}
+		if m.Role == "assistant" {
+			for _, tc := range m.ToolCalls {
+				if strings.TrimSpace(tc.ID) != "" && strings.TrimSpace(tc.Name) != "" {
+					toolNameByCallID[tc.ID] = tc.Name
+				}
+			}
 		}
 		chatMsgs = append(chatMsgs, m)
 	}
@@ -949,36 +963,45 @@ func BuildAgentRunFrame(messages []AgentMessage, upstreamModel string, tools []A
 
 	if len(chatMsgs) == 0 {
 		rawUser = "Continue."
-	} else if chatMsgs[len(chatMsgs)-1].Role == "user" {
-		historyMsgs = chatMsgs[:len(chatMsgs)-1]
-		rawUser = strings.TrimSpace(chatMsgs[len(chatMsgs)-1].Content)
+	} else if len(chatMsgs) == 1 && chatMsgs[0].Role == "user" {
+		rawUser = strings.TrimSpace(chatMsgs[0].Content)
 		if rawUser == "" {
 			rawUser = "Continue."
 		}
-	} else if chatMsgs[len(chatMsgs)-1].Role == "tool" {
-		// Trailing tool result(s) after an assistant tool_call: keep all preceding turns
-		// (including the assistant tool_call!) in history, and present the trailing tool
-		// outputs as the current user turn so the agent continues seamlessly.
-		split := len(chatMsgs)
-		for split > 0 && chatMsgs[split-1].Role == "tool" {
-			split--
-		}
-		historyMsgs = chatMsgs[:split]
-		var toolBlocks []string
-		for _, tm := range chatMsgs[split:] {
-			if formatted := formatAgentMessageText(tm); formatted != "" {
-				toolBlocks = append(toolBlocks, formatted)
+	} else if chatMsgs[len(chatMsgs)-1].Role == "user" {
+		historyMsgs = chatMsgs[:len(chatMsgs)-1]
+		var histEntries []string
+		for _, hm := range historyMsgs {
+			if entry := formatTranscriptEntry(hm, toolNameByCallID); entry != "" {
+				histEntries = append(histEntries, entry)
 			}
 		}
-		if len(toolBlocks) > 0 {
-			rawUser = strings.Join(toolBlocks, "\n\n") + "\n\nContinue based on the tool result(s) above."
+		cur := strings.TrimSpace(chatMsgs[len(chatMsgs)-1].Content)
+		if cur == "" {
+			cur = "Continue."
+		}
+		if len(histEntries) > 0 {
+			rawUser = "<conversation_history>\n" + strings.Join(histEntries, "\n\n") + "\n</conversation_history>\n\n" + cur
+		} else {
+			rawUser = cur
+		}
+	} else {
+		// Trailing tool result(s) or assistant prefill: include the entire chronological
+		// transcript inside <conversation_history> so stateless AgentService/Run sees the
+		// original user prompt, the assistant's own MCP tool call(s), and the tool result(s).
+		historyMsgs = chatMsgs
+		var histEntries []string
+		for _, hm := range chatMsgs {
+			if entry := formatTranscriptEntry(hm, toolNameByCallID); entry != "" {
+				histEntries = append(histEntries, entry)
+			}
+		}
+		if len(histEntries) > 0 {
+			rawUser = "<conversation_history>\n" + strings.Join(histEntries, "\n\n") +
+				"\n</conversation_history>\n\nAll requested MCP tool calls shown in <conversation_history> above have completed and their results are provided above. Continue responding to the user based on those results without re-running completed tool calls."
 		} else {
 			rawUser = "Continue."
 		}
-	} else {
-		// Trailing assistant message (prefill / continuation).
-		historyMsgs = chatMsgs
-		rawUser = "Continue."
 	}
 
 	userText := rawUser
@@ -992,18 +1015,8 @@ func BuildAgentRunFrame(messages []AgentMessage, upstreamModel string, tools []A
 	userMsg = appendBytesField(userMsg, 3, nil) // selected_context (empty)
 	userMsg = appendVarintFieldAlways(userMsg, 4, 1)
 
-	var convHistory []byte
-	for _, hm := range historyMsgs {
-		if encoded := encodeHistoryMessage(hm); len(encoded) > 0 {
-			convHistory = appendBytesField(convHistory, 1, encoded)
-		}
-	}
-
 	var userAction []byte
 	userAction = appendBytesField(userAction, 1, userMsg)
-	if len(convHistory) > 0 {
-		userAction = appendBytesField(userAction, 7, convHistory)
-	}
 	conversationAction := appendBytesField(nil, 1, userAction)
 
 	var requestedModel []byte
