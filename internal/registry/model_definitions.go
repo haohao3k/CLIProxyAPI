@@ -3,7 +3,9 @@
 package registry
 
 import (
+	"encoding/json"
 	"strings"
+	"sync"
 )
 
 const (
@@ -95,14 +97,58 @@ func GetKimiModels() []*ModelInfo {
 
 // GetCursorModels returns the standard Cursor model definitions.
 //
-// If the remote catalog does not include a cursor section yet, this falls back
-// to a built-in list so the provider is usable out of the box.
+// It preserves embedded Cursor aliases (e.g. cursor-glm-5p3-flash, cursor-auto-smart)
+// across remote models.json refreshes that only publish a minimal Cursor subset.
 func GetCursorModels() []*ModelInfo {
-	models := cloneModelInfos(getModels().Cursor)
-	if len(models) > 0 {
-		return models
+	var base []*ModelInfo
+	if m := getModels(); m != nil {
+		base = cloneModelInfos(m.Cursor)
 	}
-	return cursorBuiltinModels()
+	return appendMissingModelInfos(base, embeddedCursorModels(), cursorBuiltinModels())
+}
+
+var (
+	embeddedCursorOnce sync.Once
+	embeddedCursorList []*ModelInfo
+)
+
+func embeddedCursorModels() []*ModelInfo {
+	embeddedCursorOnce.Do(func() {
+		var parsed staticModelsJSON
+		if err := json.Unmarshal(embeddedModelsJSON, &parsed); err == nil && len(parsed.Cursor) > 0 {
+			embeddedCursorList = cloneModelInfos(parsed.Cursor)
+		}
+	})
+	return cloneModelInfos(embeddedCursorList)
+}
+
+func appendMissingModelInfos(base []*ModelInfo, fallbackGroups ...[]*ModelInfo) []*ModelInfo {
+	seen := make(map[string]struct{}, len(base)+64)
+	out := make([]*ModelInfo, 0, len(base)+64)
+	add := func(m *ModelInfo) {
+		if m == nil {
+			return
+		}
+		id := strings.TrimSpace(m.ID)
+		if id == "" {
+			return
+		}
+		key := strings.ToLower(id)
+		if _, exists := seen[key]; exists {
+			return
+		}
+		seen[key] = struct{}{}
+		out = append(out, m)
+	}
+	for _, m := range base {
+		add(m)
+	}
+	for _, group := range fallbackGroups {
+		for _, m := range group {
+			add(m)
+		}
+	}
+	return out
 }
 
 // cursorBuiltinModels returns the default Cursor model list, independent of the
@@ -724,7 +770,7 @@ func LookupStaticModelInfo(modelID string) *ModelInfo {
 		data.AIStudio,
 		data.CodexPro,
 		data.Kimi,
-		data.Cursor,
+		GetCursorModels(),
 		data.Antigravity,
 		data.XAI,
 		GetDevinModels(),

@@ -167,6 +167,12 @@ func buildCursorModelsFromUsable(usable []cursorwire.UsableModel) []*registry.Mo
 		})
 	}
 
+	// Preserve static/embedded Cursor aliases (e.g. cursor-glm-5p3-flash, cursor-auto-smart)
+	// when not already returned by GetUsableModels so combo fallbacks continue to work.
+	for _, staticModel := range registry.GetCursorModels() {
+		addModel(staticModel)
+	}
+
 	return models
 }
 

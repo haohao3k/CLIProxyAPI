@@ -213,6 +213,9 @@ func (h *BaseAPIHandler) getRequestDetailsWithOptions(modelName string, allowIma
 			resolvedModelName = qualModel
 		}
 	}
+	if len(providers) == 0 && strings.HasPrefix(strings.ToLower(baseModel), "cursor-") && hasRegisteredCursorProvider() {
+		providers = []string{"cursor"}
+	}
 
 	if len(providers) == 0 {
 		// The client asked for a model this proxy cannot route. Report it as a request
@@ -321,6 +324,12 @@ func resolveProviderQualifiedModel(baseModel, resolvedModelName string) ([]strin
 			}
 		}
 	}
+	if len(matched) == 0 && (prefix == "cursor" || prefix == "cu") && hasRegisteredCursorProvider() {
+		matched = []string{"cursor"}
+		if !strings.HasPrefix(strings.ToLower(restBase), "cursor-") {
+			restBase = "cursor-" + restBase
+		}
+	}
 	if len(matched) == 0 {
 		return nil, ""
 	}
@@ -333,6 +342,17 @@ func resolveProviderQualifiedModel(baseModel, resolvedModelName string) ([]strin
 		nextResolved = fmt.Sprintf("%s(%s)", restBase, strings.TrimSpace(restParsed.RawSuffix))
 	}
 	return matched, nextResolved
+}
+
+func hasRegisteredCursorProvider() bool {
+	for _, probe := range []string{"cursor-default", "cursor-claude-sonnet-4-5"} {
+		for _, p := range util.GetProviderName(probe) {
+			if strings.EqualFold(strings.TrimSpace(p), "cursor") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (h *BaseAPIHandler) validateImageOnlyModel(modelName string, allowImageModel bool) *interfaces.ErrorMessage {

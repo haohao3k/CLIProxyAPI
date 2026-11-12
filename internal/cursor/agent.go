@@ -1029,10 +1029,6 @@ func BuildAgentRunFrame(messages []AgentMessage, upstreamModel string, tools []A
 	return wrapConnectFrame(0, appendBytesField(nil, 1, runRequest))
 }
 
-var execResultFields = map[int]int{
-	2: 2, 3: 3, 4: 4, 5: 5, 7: 7, 8: 8, 9: 9, 16: 16, 20: 20, 23: 23,
-}
-
 func wrapExecClientMessage(execMsgID uint64, execID string, resultField int, resultPayload []byte) []byte {
 	var b []byte
 	if execMsgID != 0 {
@@ -1054,20 +1050,24 @@ func rejectExecRequest(execFields []protoField) []byte {
 	id, execID := extractExecIDs(execFields)
 	variant := 0
 	for _, f := range execFields {
-		if f.num != 1 && f.num != 15 {
-			variant = f.num
-			break
+		// Skip ExecServerMessage metadata fields:
+		// 1 = id (varint), 15 = exec_id (string), 19 = span_context (bytes), 55 = flags (varint).
+		// All ExecServerMessage command variants are length-delimited submessages (wire == 2)
+		// whose ExecClientMessage result uses the identical field number.
+		if f.num == 1 || f.num == 15 || f.num == 19 || f.num == 55 || f.wire != 2 {
+			continue
 		}
+		variant = f.num
+		break
 	}
-	resultField, ok := execResultFields[variant]
-	if !ok {
+	if variant < 2 {
 		return nil
 	}
 	if variant == 9 {
 		return wrapExecClientMessage(id, execID, 9, nil)
 	}
 	rejected := appendBytesField(nil, 2, appendBytesField(nil, 2, []byte("Tool not available in this environment. Use the MCP tools provided instead.")))
-	return wrapExecClientMessage(id, execID, resultField, rejected)
+	return wrapExecClientMessage(id, execID, variant, rejected)
 }
 
 func extractExecIDs(execFields []protoField) (uint64, string) {

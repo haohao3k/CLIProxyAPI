@@ -154,6 +154,22 @@ func TestAgentDuplexSessionContextAckAndMcpToolCall(t *testing.T) {
 					clientReceivedAck <- false
 				}
 
+				// Send Cursor 3.12+ MCP provider probe ExecServerMessage with metadata
+				// fields 1 (id), 19 (span_context), 36 (mcp_provider_probe), 55 (flags).
+				var probeExec []byte
+				probeExec = appendVarintFieldAlways(probeExec, 1, 7)
+				probeExec = appendBytesField(probeExec, 15, []byte("exec_probe_36"))
+				probeExec = appendBytesField(probeExec, 19, []byte("span_ctx_trace"))
+				probeExec = appendBytesField(probeExec, 36, appendBytesField(nil, 1, []byte("9router")))
+				probeExec = appendVarintFieldAlways(probeExec, 55, 0)
+				_, _ = sw.Write(wrapConnectFrame(0, appendBytesField(nil, 2, probeExec)))
+
+				// Client must reject field 36 on the duplex stream to unlock McpArgs (field 11).
+				nProbe, _ := req.Body.Read(buf)
+				if nProbe <= 5 || !bytes.Contains(buf[:nProbe], []byte("exec_probe_36")) {
+					return
+				}
+
 				// Now send ExecServerMessage (field 2) with McpArgs (field 11).
 				var entry []byte
 				entry = appendBytesField(entry, 1, []byte("path"))

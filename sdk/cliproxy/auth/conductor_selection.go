@@ -1366,6 +1366,10 @@ func (m *Manager) authSupportsRouteModel(registryRef *registry.ModelRegistry, au
 	if registryRef.ClientSupportsModel(auth.ID, routeKey) {
 		return true
 	}
+	if strings.EqualFold(strings.TrimSpace(auth.Provider), "cursor") && strings.HasPrefix(routeKey, "cursor-") &&
+		(registryRef.ClientSupportsModel(auth.ID, "cursor-default") || registryRef.ClientSupportsModel(auth.ID, "cursor-claude-sonnet-4-5")) {
+		return true
+	}
 	selectionKey := m.selectionModelKeyForAuth(auth, routeModel)
 	return selectionKey != "" && !sameCanonicalModelKey(selectionKey, routeKey) && registryRef.ClientSupportsModel(auth.ID, selectionKey)
 }
