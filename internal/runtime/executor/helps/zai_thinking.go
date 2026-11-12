@@ -1,6 +1,7 @@
 package helps
 
 import (
+	"fmt"
 	"net/url"
 	"strings"
 
@@ -51,4 +52,28 @@ func NormalizeZAIThinkingDoc(doc *ojson.Doc) bool {
 	}
 	_ = doc.Set("thinking.type", thinkingType)
 	return true
+}
+
+// NormalizeChatDeveloperRoleDoc converts OpenAI Responses "developer" message roles
+// into standard Chat Completions "system" roles for non-OpenAI chat upstreams (such
+// as Z.ai GLM Coding PaaS v4 and OpenCode Go /chat/completions) that reject
+// role="developer" with HTTP 400 (e.g. Z.ai code 1214 "Incorrect role information").
+func NormalizeChatDeveloperRoleDoc(doc *ojson.Doc) bool {
+	if doc == nil {
+		return false
+	}
+	messages := doc.Get("messages")
+	if !messages.IsArray() {
+		return false
+	}
+	changed := false
+	for i, msg := range messages.Array() {
+		if strings.EqualFold(strings.TrimSpace(msg.Get("role").String()), "developer") {
+			path := fmt.Sprintf("messages.%d", i)
+			_ = doc.Set(path+".role", "system")
+			flattenTextOnlyChatContentDoc(doc, path, msg.Get("content"))
+			changed = true
+		}
+	}
+	return changed
 }

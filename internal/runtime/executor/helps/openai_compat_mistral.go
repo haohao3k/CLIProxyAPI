@@ -17,9 +17,11 @@ func isMistralBaseURL(baseURL string) bool {
 	return host == "mistral.ai" || strings.HasSuffix(host, ".mistral.ai")
 }
 
-// SanitizeMistralChatRequestDoc removes fields rejected by Mistral's Chat
-// Completions schema. Run it after built-in request preparation and before
-// payload rules so explicit operator configuration retains final precedence.
+// SanitizeMistralChatRequestDoc removes fields and normalizes message roles rejected
+// by Mistral's Chat Completions schema (such as OpenAI Responses "developer" roles
+// and mid-conversation "system" messages after assistant/tool turns). Run it after
+// built-in request preparation and before payload rules so explicit operator
+// configuration retains final precedence.
 func SanitizeMistralChatRequestDoc(doc *ojson.Doc, baseURL string) {
 	if doc == nil || !isMistralBaseURL(baseURL) {
 		return
@@ -29,7 +31,33 @@ func SanitizeMistralChatRequestDoc(doc *ojson.Doc, baseURL string) {
 	// Mistral rejects the client_metadata field some clients attach.
 	_ = doc.Delete("client_metadata")
 	messages := doc.Get("messages").Array()
-	// Delete backwards to keep the remaining message indices stable.
+	// Pass 1 (forward): normalize OpenAI "developer" role and mid-conversation "system"
+	// roles so Mistral's strict union tag ('system'|'user'|'assistant'|'tool') and
+	// ordering rule (no 'system' after 'assistant'/'tool') never fail with HTTP 422.
+	sawAssistantOrTool := false
+	for i, message := range messages {
+		role := strings.ToLower(strings.TrimSpace(message.Get("role").String()))
+		path := fmt.Sprintf("messages.%d", i)
+		switch role {
+		case "assistant", "tool":
+			sawAssistantOrTool = true
+		case "developer":
+			if sawAssistantOrTool {
+				_ = doc.Set(path+".role", "user")
+			} else {
+				_ = doc.Set(path+".role", "system")
+			}
+			flattenTextOnlyChatContentDoc(doc, path, message.Get("content"))
+		case "system":
+			if sawAssistantOrTool {
+				_ = doc.Set(path+".role", "user")
+			}
+			flattenTextOnlyChatContentDoc(doc, path, message.Get("content"))
+		}
+	}
+
+	// Pass 2 (backward): strip assistant reasoning_content rejected by Mistral.
+	messages = doc.Get("messages").Array()
 	for i := len(messages) - 1; i >= 0; i-- {
 		message := messages[i]
 		if message.Get("role").String() != "assistant" || !message.Get("reasoning_content").Exists() {
@@ -42,6 +70,32 @@ func SanitizeMistralChatRequestDoc(doc *ojson.Doc, baseURL string) {
 			_ = doc.Delete(path + ".reasoning_content")
 		}
 	}
+}
+
+func flattenTextOnlyChatContentDoc(doc *ojson.Doc, msgPath string, content ojson.Result) {
+	if doc == nil || !content.IsArray() {
+		return
+	}
+	parts := content.Array()
+	if len(parts) == 0 {
+		_ = doc.Set(msgPath+".content", "")
+		return
+	}
+	var sb strings.Builder
+	for idx, p := range parts {
+		if !p.IsObject() {
+			return
+		}
+		ptype := strings.ToLower(strings.TrimSpace(p.Get("type").String()))
+		if ptype != "" && ptype != "text" && ptype != "input_text" && ptype != "output_text" {
+			return
+		}
+		if idx > 0 && sb.Len() > 0 {
+			sb.WriteByte('\n')
+		}
+		sb.WriteString(p.Get("text").String())
+	}
+	_ = doc.Set(msgPath+".content", sb.String())
 }
 
 // Only remove simple reasoning-only turns. Preserve whitespace, multipart

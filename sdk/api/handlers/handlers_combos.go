@@ -163,7 +163,8 @@ func (h *BaseAPIHandler) executeComboWithAuthManagerFormats(
 		if !shouldFallbackComboError(errMsg) || idx == len(candidates)-1 {
 			break
 		}
-		log.Debugf("combo %q: candidate %d/%d (%s) failed (status=%d, err=%v), falling back to next model", combo.Name, idx+1, len(candidates), candidate, errMsg.StatusCode, errMsg.Error)
+		nextCandidate := candidates[idx+1]
+		log.Warnf("🔀 [COMBO] %q: candidate %d/%d (%s) failed (status=%d, err=%v), falling back -> %s", combo.Name, idx+1, len(candidates), candidate, errMsg.StatusCode, errMsg.Error, nextCandidate)
 	}
 	return nil, nil, lastErr
 }
@@ -218,7 +219,8 @@ func (h *BaseAPIHandler) executeComboStreamWithAuthManagerFormats(
 		if !shouldFallbackComboError(errMsg) || idx == len(candidates)-1 {
 			break
 		}
-		log.Debugf("combo %q (stream): candidate %d/%d (%s) failed to open stream (status=%d, err=%v), falling back to next model", combo.Name, idx+1, len(candidates), candidate, errMsg.StatusCode, errMsg.Error)
+		nextCandidate := candidates[idx+1]
+		log.Warnf("🔀 [COMBO] %q (stream): candidate %d/%d (%s) failed (status=%d, err=%v), falling back -> %s", combo.Name, idx+1, len(candidates), candidate, errMsg.StatusCode, errMsg.Error, nextCandidate)
 	}
 	outErrChan := make(chan *interfaces.ErrorMessage, 1)
 	if lastErr != nil {

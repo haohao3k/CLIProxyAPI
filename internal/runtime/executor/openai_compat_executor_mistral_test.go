@@ -167,6 +167,49 @@ func TestOpenAICompatExecutorMistralPayloadPrecedence(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatExecutorMistralDeveloperAndMidConversationSystemRoles(t *testing.T) {
+	payload := `{
+		"model": "mistral-large-latest",
+		"instructions": "Top instructions",
+		"input": [
+			{"role": "developer", "content": [{"type": "input_text", "text": "Developer preamble"}]},
+			{"role": "user", "content": [{"type": "input_text", "text": "hi"}]},
+			{"role": "assistant", "content": [{"type": "output_text", "text": "hello"}]},
+			{"role": "developer", "content": [{"type": "input_text", "text": "Trailing developer reminder"}]}
+		]
+	}`
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream=%t", stream), func(t *testing.T) {
+			body := executeMistralChatTestRequest(
+				t,
+				"http://api.mistral.ai/v1",
+				payload,
+				sdktranslator.FormatOpenAIResponse,
+				stream,
+				false,
+				true,
+				config.PayloadConfig{},
+			)
+			messages := ojson.GetBytes(body, "messages").Array()
+			if len(messages) != 5 {
+				t.Fatalf("messages count = %d, want 5; body=%s", len(messages), body)
+			}
+			wantRoles := []string{"system", "system", "user", "assistant", "user"}
+			for i, want := range wantRoles {
+				if got := messages[i].Get("role").String(); got != want {
+					t.Fatalf("messages[%d].role = %q, want %q; body=%s", i, got, want, body)
+				}
+			}
+			if got := messages[1].Get("content").String(); got != "Developer preamble" {
+				t.Fatalf("messages[1].content = %q, want %q; body=%s", got, "Developer preamble", body)
+			}
+			if got := messages[4].Get("content").String(); got != "Trailing developer reminder" {
+				t.Fatalf("messages[4].content = %q, want %q; body=%s", got, "Trailing developer reminder", body)
+			}
+		})
+	}
+}
+
 // The local HTTP proxy enforces the two Mistral field restrictions at issue;
 // it does not call a real provider or attempt complete schema validation.
 func executeMistralChatTestRequest(t *testing.T, baseURL, payload string, source sdktranslator.Format, stream, isCompat, rejectUnsupported bool, payloadConfig config.PayloadConfig) []byte {
@@ -183,8 +226,19 @@ func executeMistralChatTestRequest(t *testing.T, baseURL, payload string, source
 		}
 		if rejectUnsupported {
 			forbidden := ojson.GetBytes(body, "stream_options").Exists()
+			sawAssistantOrTool := false
 			for _, message := range ojson.GetBytes(body, "messages").Array() {
-				if message.Get("role").String() == "assistant" && message.Get("reasoning_content").Exists() {
+				role := message.Get("role").String()
+				if role != "system" && role != "user" && role != "assistant" && role != "tool" {
+					forbidden = true
+				}
+				if role == "system" && sawAssistantOrTool {
+					forbidden = true
+				}
+				if role == "assistant" || role == "tool" {
+					sawAssistantOrTool = true
+				}
+				if role == "assistant" && message.Get("reasoning_content").Exists() {
 					forbidden = true
 				}
 			}

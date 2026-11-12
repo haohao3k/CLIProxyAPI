@@ -175,6 +175,11 @@ func (e *OpenAICompatExecutor) executeWithCredentials(ctx context.Context, auth 
 	}
 	if helps.IsZAIUpstream(e.Identifier(), baseURL) {
 		helps.NormalizeZAIThinkingDoc(doc)
+		if !useResponsesWire {
+			helps.NormalizeChatDeveloperRoleDoc(doc)
+		}
+	} else if !useResponsesWire && helps.IsOpencodeUpstream(e.Identifier(), auth, compat, baseURL) {
+		helps.NormalizeChatDeveloperRoleDoc(doc)
 	}
 
 	requestPath := helps.PayloadRequestPath(opts)
@@ -453,6 +458,11 @@ func (e *OpenAICompatExecutor) executeStreamWithCredentials(ctx context.Context,
 	}
 	if helps.IsZAIUpstream(e.Identifier(), baseURL) {
 		helps.NormalizeZAIThinkingDoc(doc)
+		if !useResponsesWire {
+			helps.NormalizeChatDeveloperRoleDoc(doc)
+		}
+	} else if !useResponsesWire && helps.IsOpencodeUpstream(e.Identifier(), auth, compat, baseURL) {
+		helps.NormalizeChatDeveloperRoleDoc(doc)
 	}
 
 	requestPath := helps.PayloadRequestPath(opts)
