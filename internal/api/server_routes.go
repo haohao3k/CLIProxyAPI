@@ -61,6 +61,9 @@ func (s *Server) setupRoutes() {
 	openaiResponsesHandlers := openai.NewOpenAIResponsesAPIHandler(s.handlers)
 	openaiResponsesHandlers.AccessManager = s.accessManager
 	s.codexLiveHandler = codexlive.NewHandler(s.handlers.AuthManager, s.cfg)
+	s.codexLiveHandler.SetModelAccessCheck(func(ctx context.Context, model string) error {
+		return s.handlers.CheckProviderModelAccess(ctx, "codex", model)
+	})
 
 	// OpenAI compatible API routes
 	v1 := s.engine.Group("/v1")
@@ -374,6 +377,10 @@ func (s *Server) codexAlphaSearch(c *gin.Context) {
 		Model string `json:"model"`
 	}
 	_ = json.Unmarshal(body, &routing)
+	if errAccess := s.handlers.CheckProviderModelAccess(c.Request.Context(), "codex", strings.TrimSpace(routing.Model)); errAccess != nil {
+		c.JSON(clienterror.HTTPStatusFromErrorOr(errAccess, http.StatusForbidden), gin.H{"error": errAccess.Error()})
+		return
+	}
 	upstreamRequestBody := sanitizeCodexAlphaSearchBody(body)
 
 	selectionHeaders := c.Request.Header.Clone()
@@ -694,7 +701,7 @@ func (s *Server) handleGrokModels(c *gin.Context) {
 		}
 		models = grokModelsFromHomeEntries(entries)
 	} else {
-		models = grokModelsFromRegistryInfos(registry.GetGlobalRegistry().GetAvailableModelInfos())
+		models = grokModelsFromRegistryInfos(s.visibleModelInfos(c))
 	}
 	s.writeModelListResponse(c, "openai", grokbuild.BuildResponse(models))
 }
@@ -1020,6 +1027,10 @@ func (s *Server) handleHomeGeminiModel(c *gin.Context) {
 
 func (s *Server) loadHomeModelEntries(c *gin.Context) ([]homeModelEntry, bool) {
 	if s == nil || c == nil || c.Request == nil {
+		return nil, false
+	}
+	if refusal := s.handlers.HomeModelFiltersError(c.Request.Context()); refusal != nil {
+		c.JSON(refusal.Status, handlers.ErrorResponse{Error: handlers.ErrorDetail{Message: refusal.Message, Type: "server_error", Code: refusal.Code}})
 		return nil, false
 	}
 	client := home.Current()
@@ -1352,4 +1363,29 @@ func homeModelInt64Value(model map[string]any, keys ...string) int64 {
 		}
 	}
 	return 0
+}
+
+// visibleModelInfos returns the available registry models the caller may see under model
+// exposure and its key policy, by registry id.
+func (s *Server) visibleModelInfos(c *gin.Context) []*registry.ModelInfo {
+	infos := registry.GetGlobalRegistry().GetAvailableModelInfos()
+	if s == nil || s.handlers == nil {
+		return infos
+	}
+	visible := make(map[string]struct{})
+	for _, model := range s.handlers.ListModelsUnprefixed(handlers.CallerContext(c), "openai") {
+		if id, ok := model["id"].(string); ok {
+			visible[id] = struct{}{}
+		}
+	}
+	out := infos[:0]
+	for _, info := range infos {
+		if info == nil {
+			continue
+		}
+		if _, ok := visible[info.ID]; ok {
+			out = append(out, info)
+		}
+	}
+	return out
 }

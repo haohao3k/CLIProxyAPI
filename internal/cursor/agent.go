@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/google/uuid"
 )
 
@@ -1498,8 +1499,28 @@ func PickAliasVariant(variants map[string]string, effort, defaultEffort string) 
 	return canonical[bestLevel], bestLevel
 }
 
-// HasExplicitVariant reports whether a Cursor model id names one effort variant itself.
-func HasExplicitVariant(id string) bool {
-	_, _, ok := ParseVariantSuffix(strings.TrimPrefix(strings.TrimSpace(id), "cursor-"))
-	return ok
+// ExtractPayloadEffort returns the effort a request payload asks of Cursor: reasoning.effort,
+// reasoning_effort, or a Claude thinking block (disabled, budget tokens, or enabled).
+func ExtractPayloadEffort(raw []byte) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	if eff := strings.TrimSpace(ojson.GetBytes(raw, "reasoning.effort").String()); eff != "" {
+		return eff
+	}
+	if eff := strings.TrimSpace(ojson.GetBytes(raw, "reasoning_effort").String()); eff != "" {
+		return eff
+	}
+	if thinkType := strings.ToLower(strings.TrimSpace(ojson.GetBytes(raw, "thinking.type").String())); thinkType != "" {
+		switch thinkType {
+		case "disabled":
+			return "none"
+		case "enabled":
+			if budget := ojson.GetBytes(raw, "thinking.budget_tokens"); budget.Exists() {
+				return strconv.FormatInt(budget.Int(), 10)
+			}
+			return "medium"
+		}
+	}
+	return ""
 }

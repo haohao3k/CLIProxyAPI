@@ -46,6 +46,10 @@ func (h *Handler) HandleDirectWebsocket(c *gin.Context) {
 		requestedModel = defaultStandardRealtimeModel
 	}
 	selectionModel := codexRealtimeModel(requestedModel)
+	if errAccess := h.checkModelAccess(c, selectionModel); errAccess != nil {
+		writeRealtimeError(c, clienterror.HTTPStatusFromErrorOr(errAccess, http.StatusForbidden), errAccess.Error(), "invalid_request_error", "model_not_allowed")
+		return
+	}
 	tokenSession := clientSecretSession(c)
 	if len(tokenSession) > 0 {
 		tokenModel := codexRealtimeModel(modelFromJSON(tokenSession))

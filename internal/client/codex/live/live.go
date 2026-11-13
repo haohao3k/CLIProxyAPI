@@ -58,6 +58,22 @@ type Handler struct {
 	mediaRelayConfig     config.CodexLiveMediaRelayConfig
 	mediaRelayConfigured bool
 	mediaLimiter         *mediaSessionLimiter
+	modelAccess          func(context.Context, string) error
+}
+
+// SetModelAccessCheck installs the model exposure and API key policy check applied to the model
+// a new live or realtime session will use.
+func (h *Handler) SetModelAccessCheck(check func(context.Context, string) error) {
+	if h != nil {
+		h.modelAccess = check
+	}
+}
+
+func (h *Handler) checkModelAccess(c *gin.Context, model string) error {
+	if h == nil || h.modelAccess == nil || c == nil || c.Request == nil {
+		return nil
+	}
+	return h.modelAccess(c.Request.Context(), model)
 }
 
 // NewHandler creates a Codex live session handler.
@@ -204,6 +220,10 @@ func (h *Handler) Handle(c *gin.Context) {
 	}
 	if errPayload != nil {
 		writeLiveError(c, http.StatusBadRequest, errPayload.Error())
+		return
+	}
+	if errAccess := h.checkModelAccess(c, model); errAccess != nil {
+		writeLiveError(c, clienterror.HTTPStatusFromErrorOr(errAccess, http.StatusForbidden), errAccess.Error())
 		return
 	}
 	runtimeConfig, mediaRelay, mediaRelayErr := h.currentRuntime()

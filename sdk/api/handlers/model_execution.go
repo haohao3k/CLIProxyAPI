@@ -34,6 +34,8 @@ type modelExecutionOptions struct {
 	ModelAccessChecked bool
 	// AllowedProviders, when non-nil, limits execution to these providers (set by the gate).
 	AllowedProviders []string
+	// CursorPinned tells the Cursor executor the model is an exact variant (set by the gate).
+	CursorPinned bool
 }
 
 // ProtocolExecutionRequest describes a route-level model execution request with explicit protocols.

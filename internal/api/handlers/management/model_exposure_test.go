@@ -144,4 +144,24 @@ combos:
 	if len(loaded.APIKeyPolicies) != 1 || len(loaded.APIKeyPolicies[0].Allow) != 0 || !loaded.APIKeyPolicies[0].Restricted {
 		t.Fatalf("policies = %+v, want key-a restricted with empty allow\n%s", loaded.APIKeyPolicies, data)
 	}
+
+	// Whole lists and sections emptied: a fresh load of the file must see none of them.
+	for url, body := range map[string]string{
+		"/model-exposure":   `{"model-exposure":{"enabled":false,"providers":{}}}`,
+		"/api-key-policies": `{"key-policies":[]}`,
+	} {
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, url, strings.NewReader(body)))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("PUT %s: %d %s", url, rec.Code, rec.Body.String())
+		}
+	}
+	loaded, err = config.LoadConfig(path)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	data, _ = os.ReadFile(path)
+	if loaded.ModelExposure.Enabled || len(loaded.ModelExposure.Providers) != 0 || len(loaded.APIKeyPolicies) != 0 {
+		t.Fatalf("after emptying whole sections: exposure=%+v policies=%+v\n%s", loaded.ModelExposure, loaded.APIKeyPolicies, data)
+	}
 }

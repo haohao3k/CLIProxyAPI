@@ -266,6 +266,10 @@ func (h *Handler) createClientSecret(c *gin.Context, session json.RawMessage, ex
 		writeRealtimeError(c, http.StatusBadRequest, errSession.Error(), "invalid_request_error", "invalid_session")
 		return
 	}
+	if errAccess := h.checkModelAccess(c, codexRealtimeModel(modelFromJSON(upstreamSession))); errAccess != nil {
+		writeRealtimeError(c, clienterror.HTTPStatusFromErrorOr(errAccess, http.StatusForbidden), errAccess.Error(), "invalid_request_error", "model_not_allowed")
+		return
+	}
 	issuerPrincipal, _ := c.Get("userApiKey")
 	issuerProvider, _ := c.Get("accessProvider")
 	issuerPrincipalValue, _ := issuerPrincipal.(string)

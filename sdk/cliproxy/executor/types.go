@@ -8,6 +8,10 @@ import (
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 )
 
+// CursorPinnedModelMetadataKey marks a Cursor request whose model the handler already resolved to
+// an exact variant; the Cursor executor must not re-pick the variant from the payload effort.
+const CursorPinnedModelMetadataKey = "cursor_pinned_model"
+
 // RequestedModelMetadataKey stores the client-requested model name in Options.Metadata.
 const RequestedModelMetadataKey = "requested_model"
 

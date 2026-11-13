@@ -8,10 +8,12 @@ import (
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cursor"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 )
 
@@ -68,7 +70,7 @@ func newModelAccessFixture(t *testing.T) *modelAccessFixture {
 		models []string
 	}{
 		{f.codex, []string{"mx-gpt-open", "mx-gpt-hidden"}},
-		{f.cursor, []string{"cursor-default", "cursor-mx-opus", "cursor-mx-ds-low", "cursor-mx-ds", "cursor-mx-ds-high"}},
+		{f.cursor, []string{"cursor-default", "cursor-mx-opus", "cursor-mx-ds-low", "cursor-mx-ds", "cursor-mx-ds-high", "cursor-zz-opus-low", "cursor-zz-opus-high", "cursor-zz-opus-max"}},
 	} {
 		manager.RegisterExecutor(entry.exec)
 		auth := &coreauth.Auth{ID: "mx-" + entry.exec.provider, Provider: entry.exec.provider, Status: coreauth.StatusActive}
@@ -189,7 +191,7 @@ func TestCursorAliasResolvesEffortToVariant(t *testing.T) {
 		{"cur/mx-ds", `{"model":"cur/mx-ds","reasoning_effort":"high"}`, "cursor-mx-ds-high"},
 		{"cur/mx-ds", `{"model":"cur/mx-ds","reasoning_effort":"low"}`, "cursor-mx-ds-low"},
 		{"cur/mx-ds", `{"model":"cur/mx-ds","reasoning_effort":"xhigh"}`, "cursor-mx-ds-high"},
-		{"cur/mx-ds", `{"model":"cur/mx-ds"}`, "cursor-mx-ds(medium)"},
+		{"cur/mx-ds", `{"model":"cur/mx-ds"}`, "cursor-mx-ds"},
 		{"cur/mx-ds(low)", `{"model":"cur/mx-ds(low)","reasoning_effort":"high"}`, "cursor-mx-ds-low"},
 		{"mx-ds", `{"model":"mx-ds","reasoning_effort":"high"}`, "cursor-mx-ds-high"},
 	}
@@ -270,5 +272,83 @@ func TestCursorAliasOwnsCollidingModelName(t *testing.T) {
 	f.cfg.ModelExposure.ListPrefixedOnly = false
 	if got := strings.Join(f.listIDs(ctx), ","); got != "codex/mx-gpt-open,cur/mx-ds,cur/mx-opus,mx-combo,mx-ds,mx-gpt-open,mx-opus" {
 		t.Fatalf("list-prefixed-only=false listed = %s, want prefixed and bare ids", got)
+	}
+}
+
+// A "(level)" suffix, payload effort or a family id must not reach a Cursor variant that exposure
+// hides or the key may not call: the gate checks the variant the executor will run and pins it.
+func TestCursorVariantSelectionCannotBypassExposureOrPolicy(t *testing.T) {
+	f := newModelAccessFixture(t)
+	cursor.RecordUsableModels([]cursor.UsableModel{{ID: "zz-opus-low"}, {ID: "zz-opus-high"}, {ID: "zz-opus-max"}})
+	f.cfg.ModelExposure.Providers["cursor"] = config.ModelExposureProvider{Prefix: "cur", Mode: "allowlist", Allow: []string{"mx-*", "zz-*"}, Deny: []string{"mx-ds*", "zz-opus-max"}}
+	f.cfg.APIKeyPolicies = append(f.cfg.APIKeyPolicies, config.APIKeyPolicy{Key: "zz-key", Restricted: true, Allow: []string{"cur/zz-opus-high", "cur/zz-opus-low"}})
+	open, limited := context.Background(), keyContext("zz-key")
+
+	for _, tc := range []struct {
+		ctx         context.Context
+		model, body string
+		status      int
+	}{
+		{open, "cur/zz-opus-high(max)", "", http.StatusBadRequest},                                       // suffix to a denied variant
+		{open, "cur/zz-opus", `{"model":"cur/zz-opus","reasoning_effort":"max"}`, http.StatusBadRequest}, // family id + effort
+		{open, "cursor-zz-opus-low(max)", "", http.StatusBadRequest},                                     // bare registry id + suffix
+		{limited, "cur/zz-opus-high(max)", "", http.StatusBadRequest},
+		{limited, "cur/zz-opus-low(high)", "", 0},
+	} {
+		got, errMsg := f.run(tc.ctx, tc.model, tc.body)
+		if tc.status == 0 {
+			if errMsg != nil || got != "cursor-zz-opus-high" {
+				t.Fatalf("%s: executed %q err %+v, want cursor-zz-opus-high", tc.model, got, errMsg)
+			}
+			continue
+		}
+		if errMsg == nil || errMsg.StatusCode != tc.status {
+			t.Fatalf("%s %s: executed %q err %+v, want status %d", tc.model, tc.body, got, errMsg, tc.status)
+		}
+	}
+
+	// A variant the key may not call but exposure shows: 403 on the resolved variant.
+	f.cfg.ModelExposure.Providers["cursor"] = config.ModelExposureProvider{Prefix: "cur", Mode: "all"}
+	if _, errMsg := f.run(limited, "cur/zz-opus-high(max)", ""); errMsg == nil || errMsg.StatusCode != http.StatusForbidden {
+		t.Fatalf("limited key reached zz-opus-max: %+v", errMsg)
+	}
+	// The executor is told the model is pinned, so payload effort cannot re-pick the variant.
+	got, errMsg := f.run(limited, "cur/zz-opus-high", `{"model":"cur/zz-opus-high","reasoning_effort":"max"}`)
+	_, opts := f.cursor.captured()
+	if errMsg != nil || got != "cursor-zz-opus-high" || opts.Metadata[coreexecutor.CursorPinnedModelMetadataKey] != true {
+		t.Fatalf("pinned run: model %q err %+v pinned=%v", got, errMsg, opts.Metadata[coreexecutor.CursorPinnedModelMetadataKey])
+	}
+}
+
+// Fixed-provider routes (Codex live, realtime, alpha search) use CheckProviderModelAccess; Home mode
+// refuses while filters are active rather than skipping them.
+func TestProviderModelAccessAndHomeRefusal(t *testing.T) {
+	f := newModelAccessFixture(t)
+	for _, tc := range []struct {
+		ctx    context.Context
+		model  string
+		status int
+	}{
+		{keyContext(mxEmptyKey), "mx-gpt-open", http.StatusForbidden},
+		{keyContext(mxEmptyKey), "", http.StatusForbidden},
+		{keyContext(mxRestrictedKey), "gpt-live-1-codex", http.StatusBadRequest}, // exposure first
+		{keyContext(mxRestrictedKey), "codex/mx-gpt-open", 0},
+		{keyContext(mxRestrictedKey), "mx-gpt-open", 0},
+		{context.Background(), "gpt-live-1-codex", http.StatusBadRequest}, // codex allowlist hides it
+		{context.Background(), "mx-gpt-open", 0},
+	} {
+		err := f.handler.CheckProviderModelAccess(tc.ctx, "codex", tc.model)
+		status := 0
+		if err != nil {
+			status = err.(*ModelAccessError).StatusCode()
+		}
+		if status != tc.status {
+			t.Errorf("CheckProviderModelAccess(%q) status %d, want %d (%v)", tc.model, status, tc.status, err)
+		}
+	}
+
+	f.handler.AuthManager.SetConfig(&config.Config{Home: config.HomeConfig{Enabled: true}})
+	if _, errMsg := f.run(keyContext(mxRestrictedKey), "codex/mx-gpt-open", ""); errMsg == nil || errMsg.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("Home mode with filters active: %+v, want 503", errMsg)
 	}
 }

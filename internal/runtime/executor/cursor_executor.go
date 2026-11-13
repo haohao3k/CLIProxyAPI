@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -87,27 +86,7 @@ type cursorUpstreamPlan struct {
 }
 
 func extractCursorEffortFromPayload(raw []byte) string {
-	if len(raw) == 0 {
-		return ""
-	}
-	if eff := strings.TrimSpace(ojson.GetBytes(raw, "reasoning.effort").String()); eff != "" {
-		return eff
-	}
-	if eff := strings.TrimSpace(ojson.GetBytes(raw, "reasoning_effort").String()); eff != "" {
-		return eff
-	}
-	if thinkType := strings.ToLower(strings.TrimSpace(ojson.GetBytes(raw, "thinking.type").String())); thinkType != "" {
-		switch thinkType {
-		case "disabled":
-			return "none"
-		case "enabled":
-			if budget := ojson.GetBytes(raw, "thinking.budget_tokens"); budget.Exists() {
-				return strconv.FormatInt(budget.Int(), 10)
-			}
-			return "medium"
-		}
-	}
-	return ""
+	return cursorwire.ExtractPayloadEffort(raw)
 }
 
 func isCursorAgentCapable(body []byte) bool {
@@ -161,6 +140,11 @@ func (e *CursorExecutor) buildUpstreamPlan(ctx context.Context, req cliproxyexec
 	if payloadEffort == "" {
 		payloadEffort = extractCursorEffortFromPayload(body)
 	}
+	// The handler already resolved a pinned model to its exact variant from the same effort.
+	pinned, _ := opts.Metadata[cliproxyexecutor.CursorPinnedModelMetadataKey].(bool)
+	if pinned {
+		payloadEffort = ""
+	}
 
 	resolvedInitial := cursorwire.ResolveUpstreamModel(req.Model, payloadEffort)
 	doc := ojson.NewDoc(body)
@@ -178,7 +162,7 @@ func (e *CursorExecutor) buildUpstreamPlan(ctx context.Context, req cliproxyexec
 	}
 	// Re-resolve in case a payload override rule changed `model` or `reasoning_effort`.
 	overrideEffort := extractCursorEffortFromPayload(body)
-	if overrideEffort == "" {
+	if overrideEffort == "" || pinned {
 		overrideEffort = payloadEffort
 	}
 	upstreamModel := cursorwire.ResolveUpstreamModel(finalModelRaw, overrideEffort)
