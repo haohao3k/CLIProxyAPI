@@ -71,6 +71,7 @@ func SaveConfigPreserveComments(configFile string, cfg *Config, migrateV8 ...boo
 	pruneMappingToGeneratedKeys(original.Content[0], generated.Content[0], "oauth-request-scoped-errors")
 	pruneMappingToGeneratedKeys(original.Content[0], generated.Content[0], "oauth-settings")
 	replacePluginConfigsSubtree(original.Content[0], generated.Content[0])
+	replaceRootSubtrees(original.Content[0], generated.Content[0], wholeReplacedRoots...)
 
 	// Merge generated into original in-place, preserving comments/order of existing nodes.
 	mergeMappingPreserve(original.Content[0], generated.Content[0])
@@ -1039,5 +1040,28 @@ func replacePluginConfigsSubtree(dstRoot, srcRoot *yaml.Node) {
 			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "configs"},
 			copiedConfigs,
 		)
+	}
+}
+
+// wholeReplacedRoots are sections the management API replaces as a unit. The merge keeps
+// existing nodes that the generated document omits, and these sections omit empty lists,
+// maps and entries, so they are replaced (or removed) whole instead of merged.
+var wholeReplacedRoots = []string{"combos", "model-exposure", "cursor-model-aliases", "api-key-policies"}
+
+func replaceRootSubtrees(dstRoot, srcRoot *yaml.Node, keys ...string) {
+	if dstRoot == nil || srcRoot == nil || dstRoot.Kind != yaml.MappingNode || srcRoot.Kind != yaml.MappingNode {
+		return
+	}
+	for _, key := range keys {
+		srcIdx := findMapKeyIndex(srcRoot, key)
+		dstIdx := findMapKeyIndex(dstRoot, key)
+		switch {
+		case srcIdx < 0:
+			removeMapKey(dstRoot, key)
+		case dstIdx < 0:
+			dstRoot.Content = append(dstRoot.Content, deepCopyNode(srcRoot.Content[srcIdx]), deepCopyNode(srcRoot.Content[srcIdx+1]))
+		default:
+			dstRoot.Content[dstIdx+1] = deepCopyNode(srcRoot.Content[srcIdx+1])
+		}
 	}
 }
