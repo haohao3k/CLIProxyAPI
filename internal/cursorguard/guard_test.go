@@ -47,6 +47,13 @@ func newGuardFixture(t *testing.T) *guardFixture {
 	return f
 }
 
+// pollNow runs the background poll for the credential and waits for it.
+func (f *guardFixture) pollNow() {
+	for _, done := range f.guard.pollDue(context.Background(), f.cfg, []*coreauth.Auth{f.auth}) {
+		<-done
+	}
+}
+
 // admit returns the refusal reason code, or "" when admitted; admitted requests reach Cursor.
 func (f *guardFixture) admit() string {
 	f.t.Helper()
@@ -69,7 +76,8 @@ func TestGuardAllowsUnderCapAndBlocksAtCap(t *testing.T) {
 		t.Fatalf("$10 of a $20 cap refused: %s", code)
 	}
 	f.cursor.usage.OverageCents = 2000
-	f.clock = f.clock.Add(time.Minute) // next poll
+	f.clock = f.clock.Add(time.Minute)
+	f.pollNow()
 	if code := f.admit(); code != ReasonCapReached {
 		t.Fatalf("at the cap: %q, want %s", code, ReasonCapReached)
 	}
@@ -132,11 +140,12 @@ func TestGuardFailsClosedWhenUsageIsUnknown(t *testing.T) {
 	// Never read, polls failing: allowed for the grace polls, then blocked.
 	f := newGuardFixture(t)
 	f.cursor.err = errors.New("dashboard unavailable")
-	for i := 1; i < f.cfg.CursorSpendGuard.UnknownGracePolls; i++ {
-		if code := f.admit(); code != "" {
-			t.Fatalf("failed poll %d within grace: %s", i, code)
-		}
+	if code := f.admit(); code != "" { // first request polls synchronously: failure 1
+		t.Fatalf("first failed poll within grace: %s", code)
+	}
+	for i := 2; i <= f.cfg.CursorSpendGuard.UnknownGracePolls; i++ {
 		f.clock = f.clock.Add(time.Minute)
+		f.pollNow()
 	}
 	if code := f.admit(); code != ReasonUsageUnknown {
 		t.Fatalf("after %d failed polls: %q", f.cfg.CursorSpendGuard.UnknownGracePolls, code)
@@ -150,6 +159,7 @@ func TestGuardFailsClosedWhenUsageIsUnknown(t *testing.T) {
 	}
 	g.cursor.err = errors.New("dashboard unavailable")
 	g.clock = g.clock.Add(time.Minute)
+	g.pollNow()
 	if code := g.admit(); code != ReasonUsageUnknown {
 		t.Fatalf("failed poll with included exhausted: %q", code)
 	}
@@ -184,5 +194,32 @@ func TestGuardDisabledNeverPolls(t *testing.T) {
 	f.cursor.usage.OverageCents = 99999
 	if code := f.admit(); code != "" || f.cursor.polls != 0 {
 		t.Fatalf("disabled guard: code %q polls %d", code, f.cursor.polls)
+	}
+}
+
+// Polls run in the background: the request path reads memory only (no poll while data is merely a
+// poll interval old), and data older than two intervals counts as unknown, which fails closed.
+func TestGuardPollsInBackgroundAndFailsClosedOnStaleData(t *testing.T) {
+	f := newGuardFixture(t)
+	f.cursor.usage.OverageCents = 0
+	if code := f.admit(); code != "" || f.cursor.polls != 1 {
+		t.Fatalf("first request: code %q polls %d, want one synchronous poll", code, f.cursor.polls)
+	}
+	f.clock = f.clock.Add(90 * time.Second)
+	if code := f.admit(); code != "" || f.cursor.polls != 1 {
+		t.Fatalf("request after one interval: code %q polls %d, want no request-path poll", code, f.cursor.polls)
+	}
+	f.pollNow()
+	f.pollNow() // not due again yet
+	if f.cursor.polls != 2 {
+		t.Fatalf("background polls = %d, want one per interval", f.cursor.polls-1)
+	}
+	f.clock = f.clock.Add(3 * time.Minute) // background poller stalled for three intervals
+	if code := f.admit(); code != ReasonUsageUnknown {
+		t.Fatalf("data three intervals old: %q, want %s", code, ReasonUsageUnknown)
+	}
+	f.pollNow()
+	if code := f.admit(); code != "" {
+		t.Fatalf("after a fresh background poll: %s", code)
 	}
 }

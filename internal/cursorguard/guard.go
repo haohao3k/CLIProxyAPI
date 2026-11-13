@@ -90,6 +90,8 @@ type state struct {
 	pollMu       sync.Mutex
 	usage        *Usage
 	checkedAt    time.Time
+	lastSuccess  time.Time
+	polling      bool
 	failures     int
 	lastErr      string
 	reservations map[uint64]reservation
@@ -172,25 +174,30 @@ func (g *Guard) Admit(ctx context.Context, cfg *config.Config, auth *coreauth.Au
 	}, nil
 }
 
-// pollIfStale reads usage when the last read is older than the poll interval, the billing period
-// has ended, or force is set. Polls of one credential are serialized.
+// pollIfStale reads usage on the request path only when the credential was never read or its
+// billing period has ended; regular polls run in the background (Run). With force (management
+// recheck) it always reads. Polls of one credential are serialized.
 func (g *Guard) pollIfStale(ctx context.Context, cfg *config.Config, auth *coreauth.Auth, st *state, force bool) {
-	settings := cfg.CursorSpendGuard
-	stale := func() bool {
+	needed := func() bool {
 		g.mu.Lock()
 		defer g.mu.Unlock()
-		now := g.now()
-		return force || st.checkedAt.IsZero() || now.Sub(st.checkedAt) >= settings.PollEvery() ||
-			(st.usage != nil && !st.usage.PeriodEnd.IsZero() && !now.Before(st.usage.PeriodEnd))
+		return force || st.checkedAt.IsZero() ||
+			(st.usage != nil && !st.usage.PeriodEnd.IsZero() && !g.now().Before(st.usage.PeriodEnd))
 	}
-	if !stale() {
+	if !needed() {
 		return
 	}
 	st.pollMu.Lock()
 	defer st.pollMu.Unlock()
-	if !force && !stale() {
+	if !force && !needed() {
 		return
 	}
+	g.poll(ctx, cfg, auth, st)
+}
+
+// poll reads usage and stores the result. The caller holds st.pollMu.
+func (g *Guard) poll(ctx context.Context, cfg *config.Config, auth *coreauth.Auth, st *state) {
+	settings := cfg.CursorSpendGuard
 	g.mu.Lock()
 	fetch := g.fetcher
 	g.mu.Unlock()
@@ -206,17 +213,76 @@ func (g *Guard) pollIfStale(ctx context.Context, cfg *config.Config, auth *corea
 	if err != nil {
 		st.failures++
 		st.lastErr = err.Error()
-		return
+	} else {
+		st.failures = 0
+		st.lastErr = ""
+		st.lastSuccess = now
+		st.usage = &usage
+		// Requests started before the newest event are in the polled usage.
+		for id, r := range st.reservations {
+			if !r.at.After(usage.LatestEventAt) {
+				delete(st.reservations, id)
+			}
+		}
 	}
-	st.failures = 0
-	st.lastErr = ""
-	st.usage = &usage
-	// Requests started before the newest event are in the polled usage; old ones expire.
 	for id, r := range st.reservations {
-		if !r.at.After(usage.LatestEventAt) || now.Sub(r.at) > 2*settings.PollEvery() {
+		if now.Sub(r.at) > 2*settings.PollEvery() {
 			delete(st.reservations, id)
 		}
 	}
+	g.recordLocked(auth, st, g.decideLocked(st, settings, settings.DefaultRequestReserveUSD*100))
+}
+
+// Run polls every Cursor credential in the background, each once per poll interval in its own
+// goroutine, until ctx ends. cfg and auths return the current configuration and credentials.
+func (g *Guard) Run(ctx context.Context, cfg func() *config.Config, auths func() []*coreauth.Auth) {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		g.pollDue(ctx, cfg(), auths())
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+// pollDue starts a poll for each enabled-guard Cursor credential whose last read is a poll
+// interval old and that is not being polled already.
+func (g *Guard) pollDue(ctx context.Context, cfg *config.Config, auths []*coreauth.Auth) []chan struct{} {
+	var started []chan struct{}
+	if cfg == nil || !cfg.CursorSpendGuard.Enabled {
+		return started
+	}
+	every := cfg.CursorSpendGuard.PollEvery()
+	for _, auth := range auths {
+		if auth == nil || auth.Disabled || !strings.EqualFold(strings.TrimSpace(auth.Provider), "cursor") {
+			continue
+		}
+		st := g.state(auth.ID)
+		g.mu.Lock()
+		due := !st.polling && (st.checkedAt.IsZero() || g.now().Sub(st.checkedAt) >= every)
+		if due {
+			st.polling = true
+		}
+		g.mu.Unlock()
+		if !due {
+			continue
+		}
+		done := make(chan struct{})
+		started = append(started, done)
+		go func(auth *coreauth.Auth, st *state) {
+			defer close(done)
+			st.pollMu.Lock()
+			g.poll(ctx, cfg, auth, st)
+			st.pollMu.Unlock()
+			g.mu.Lock()
+			st.polling = false
+			g.mu.Unlock()
+		}(auth, st)
+	}
+	return started
 }
 
 // decideLocked returns why a request reserving extraCents must be refused, or nil.
@@ -224,6 +290,8 @@ func (g *Guard) decideLocked(st *state, settings config.CursorSpendGuardConfig, 
 	usage := st.usage
 	if settings.FailClosedWhenUnknown {
 		switch {
+		case usage != nil && g.now().Sub(st.lastSuccess) > 2*settings.PollEvery():
+			return &Reason{Code: ReasonUsageUnknown, Message: "Cursor usage has not been read for more than two poll intervals"}
 		case usage != nil && !usage.Complete:
 			return &Reason{Code: ReasonUsageUnknown, Message: "Cursor usage events for the billing period could not all be read"}
 		case st.failures > 0 && usage.IncludedExhausted():
