@@ -1046,7 +1046,7 @@ func replacePluginConfigsSubtree(dstRoot, srcRoot *yaml.Node) {
 // wholeReplacedRoots are sections the management API replaces as a unit. The merge keeps
 // existing nodes that the generated document omits, and these sections omit empty lists,
 // maps and entries, so they are replaced (or removed) whole instead of merged.
-var wholeReplacedRoots = []string{"combos", "model-exposure", "cursor-model-aliases", "api-key-policies"}
+var wholeReplacedRoots = []string{"combos", "model-exposure", "cursor-model-aliases", "api-key-policies", "cursor-spend-guard"}
 
 func replaceRootSubtrees(dstRoot, srcRoot *yaml.Node, keys ...string) {
 	if dstRoot == nil || srcRoot == nil || dstRoot.Kind != yaml.MappingNode || srcRoot.Kind != yaml.MappingNode {

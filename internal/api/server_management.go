@@ -141,6 +141,11 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PUT("/api-key-policies", s.mgmt.PutAPIKeyPolicies)
 		mgmt.PATCH("/api-key-policies", s.mgmt.PatchAPIKeyPolicy)
 
+		mgmt.GET("/cursor-spend-guard", s.mgmt.GetCursorSpendGuard)
+		mgmt.PUT("/cursor-spend-guard", s.mgmt.PutCursorSpendGuard)
+		mgmt.GET("/cursor-spend-guard/status", s.mgmt.GetCursorSpendGuardStatus)
+		mgmt.POST("/cursor-spend-guard/recheck", s.mgmt.RecheckCursorSpendGuard)
+
 		mgmt.GET("/combos", s.mgmt.GetCombos)
 		mgmt.PUT("/combos", s.mgmt.PutCombos)
 		mgmt.POST("/combos", s.mgmt.PostCombo)

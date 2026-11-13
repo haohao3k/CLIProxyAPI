@@ -9,6 +9,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cursor"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cursorguard"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
@@ -401,5 +402,22 @@ func TestCursorAliasResolvesAsComboMember(t *testing.T) {
 	got, errMsg := f.run(context.Background(), "mx-alias-combo", `{"model":"mx-alias-combo","reasoning_effort":"high"}`)
 	if errMsg != nil || got != "cursor-mx-ds-high" {
 		t.Fatalf("combo member alias executed %q (err %+v), want cursor-mx-ds-high", got, errMsg)
+	}
+}
+
+// A Cursor credential refused by the spend guard fails its combo member with a credential-scoped
+// 429, so the combo falls through to its next member; a direct call gets the refusal.
+func TestComboFallsThroughWhenCursorSpendCapIsReached(t *testing.T) {
+	f := newModelAccessFixture(t)
+	f.cursor.execute = func(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
+		return coreexecutor.Response{}, &cursorguard.BlockedError{Reason: cursorguard.Reason{Code: cursorguard.ReasonCapReached, Message: "cap"}}
+	}
+	f.cfg.Combos = append(f.cfg.Combos, config.ComboConfig{Name: "mx-spend-combo", Models: []string{"cur/mx-opus", "codex/mx-gpt-open"}})
+	got, errMsg := f.run(context.Background(), "mx-spend-combo", "")
+	if errMsg != nil || got != "mx-gpt-open" {
+		t.Fatalf("combo executed %q (err %+v), want fall-through to mx-gpt-open", got, errMsg)
+	}
+	if _, errMsg = f.run(context.Background(), "cur/mx-opus", ""); errMsg == nil || errMsg.StatusCode != http.StatusTooManyRequests || !strings.Contains(errMsg.Error.Error(), "cursor_spend_cap_reached") {
+		t.Fatalf("direct call: %+v, want 429 cursor_spend_cap_reached", errMsg)
 	}
 }

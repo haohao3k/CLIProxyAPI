@@ -14,6 +14,7 @@ import (
 	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	cursorwire "github.com/router-for-me/CLIProxyAPI/v8/internal/cursor"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cursorguard"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
@@ -318,6 +319,12 @@ func (e *CursorExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	if errBuild != nil {
 		return resp, errBuild
 	}
+	releaseSpend, errSpend := cursorguard.Default().Admit(ctx, e.cfg, auth, plan.upstreamModel)
+	if errSpend != nil {
+		return resp, errSpend
+	}
+	reachedUpstream := false
+	defer func() { releaseSpend(reachedUpstream) }()
 	body := plan.translatedBody
 
 	var text, reasoning strings.Builder
@@ -329,6 +336,7 @@ func (e *CursorExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		if errSess != nil {
 			return resp, errSess
 		}
+		reachedUpstream = true
 		defer sess.Close()
 		respHeaders = sess.Response.Header.Clone()
 
@@ -353,6 +361,7 @@ func (e *CursorExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		if errResp != nil {
 			return resp, errResp
 		}
+		reachedUpstream = true
 		defer func() {
 			if errClose := httpResp.Body.Close(); errClose != nil {
 				log.Errorf("cursor executor: close response body error: %v", errClose)
@@ -407,6 +416,12 @@ func (e *CursorExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	if errBuild != nil {
 		return nil, errBuild
 	}
+	releaseSpend, errSpend := cursorguard.Default().Admit(ctx, e.cfg, auth, plan.upstreamModel)
+	if errSpend != nil {
+		return nil, errSpend
+	}
+	reachedUpstream := false
+	defer func() { releaseSpend(reachedUpstream) }()
 	body := plan.translatedBody
 
 	originalPayload := req.Payload
@@ -420,6 +435,7 @@ func (e *CursorExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		if errSess != nil {
 			return nil, errSess
 		}
+		reachedUpstream = true
 		respHeaders := sess.Response.Header.Clone()
 		out := make(chan cliproxyexecutor.StreamChunk)
 
@@ -513,6 +529,7 @@ func (e *CursorExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	if errResp != nil {
 		return nil, errResp
 	}
+	reachedUpstream = true
 
 	out := make(chan cliproxyexecutor.StreamChunk)
 	go func() {

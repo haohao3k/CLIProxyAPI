@@ -123,6 +123,9 @@ type SDKConfig struct {
 	// CursorModelAliases collapses Cursor effort variants into one model name.
 	CursorModelAliases []CursorModelAlias `yaml:"cursor-model-aliases,omitempty" json:"cursor-model-aliases,omitempty"`
 
+	// CursorSpendGuard caps Cursor on-demand spend after the included quota is used up.
+	CursorSpendGuard CursorSpendGuardConfig `yaml:"cursor-spend-guard,omitempty" json:"cursor-spend-guard"`
+
 	// APIKeyPolicies restricts the models each client API key may call (v8 path access.key-policies).
 	APIKeyPolicies []APIKeyPolicy `yaml:"api-key-policies,omitempty" json:"api-key-policies,omitempty"`
 }

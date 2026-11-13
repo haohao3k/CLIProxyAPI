@@ -34,6 +34,7 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	cfg.DisableImageGeneration = DisableImageGenerationOff
 	cfg.WebsocketAuth = true
 	cfg.ModelExposure.AcceptBareIDs = true
+	cfg.CursorSpendGuard = DefaultCursorSpendGuard()
 	cfg.Pprof.Enable = false
 	cfg.Pprof.Addr = DefaultPprofAddr
 	cfg.Discovery.Enabled = false

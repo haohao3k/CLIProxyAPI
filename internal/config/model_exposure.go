@@ -84,6 +84,7 @@ func (c *SDKConfig) SanitizeModelExposure() {
 		return
 	}
 	c.ModelExposure.sanitize()
+	c.CursorSpendGuard.Sanitize()
 	c.CursorModelAliases = sanitizeCursorModelAliases(c.CursorModelAliases)
 	c.APIKeyPolicies = sanitizeAPIKeyPolicies(c.APIKeyPolicies)
 }

@@ -161,6 +161,17 @@ access:
 #       medium: cursor-deepseek-v41-flash-1017
 #       high: cursor-deepseek-v41-flash-1017-high
 
+# Optional Cursor on-demand spend cap, per Cursor credential and billing period. Overage is the
+# credential's own usage events that are not "included" (not the team pool). Each request reserves
+# an estimated cost until the next poll, so a burst cannot pass the cap. Raise the cap to unblock.
+# cursor-spend-guard:
+#   enabled: true
+#   max-overage-usd: 20
+#   poll-interval: 60s                 # at least 15s
+#   fail-closed-when-unknown: true     # block when usage cannot be read (see unknown-grace-polls)
+#   unknown-grace-polls: 3
+#   default-request-reserve-usd: 0.5   # reserve for a model without recent cost
+
 # Optional credential concurrency and observation contracts.
 
 # credentials:
