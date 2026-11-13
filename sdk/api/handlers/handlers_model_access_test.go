@@ -195,6 +195,13 @@ func TestCursorAliasResolvesEffortToVariant(t *testing.T) {
 		{"cur/mx-ds(low)", `{"model":"cur/mx-ds(low)","reasoning_effort":"high"}`, "cursor-mx-ds-low"},
 		{"mx-ds", `{"model":"mx-ds","reasoning_effort":"high"}`, "cursor-mx-ds-high"},
 	}
+	// Claude adaptive thinking reaches the alias through translation, as it reaches the executor.
+	if _, _, errMsg := f.handler.ExecuteWithAuthManager(ctx, "claude", "cur/mx-ds", []byte(`{"model":"cur/mx-ds","max_tokens":8,"thinking":{"type":"adaptive"},"output_config":{"effort":"low"},"messages":[{"role":"user","content":"hi"}]}`), ""); errMsg != nil {
+		t.Fatalf("claude alias request: %+v", errMsg)
+	}
+	if got, _ := f.cursor.captured(); got.Model != "cursor-mx-ds-low" {
+		t.Fatalf("claude output_config.effort low via alias executed %q, want cursor-mx-ds-low", got.Model)
+	}
 	for _, tc := range cases {
 		got, errMsg := f.run(ctx, tc.model, tc.body)
 		if errMsg != nil {
@@ -336,6 +343,7 @@ func TestProviderModelAccessAndHomeRefusal(t *testing.T) {
 		{keyContext(mxRestrictedKey), "mx-gpt-open", 0},
 		{context.Background(), "gpt-live-1-codex", http.StatusBadRequest}, // codex allowlist hides it
 		{context.Background(), "mx-gpt-open", 0},
+		{context.Background(), "", http.StatusBadRequest}, // exposure on: the upstream default cannot be checked
 	} {
 		err := f.handler.CheckProviderModelAccess(tc.ctx, "codex", tc.model)
 		status := 0

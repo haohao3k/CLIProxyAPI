@@ -182,7 +182,10 @@ func (h *BaseAPIHandler) gateModelAccess(ctx context.Context, entryProtocol, mod
 		if !policy.AllowsName(exposedAlias) {
 			return "", nil, modelNotAllowedError(modelName)
 		}
-		effort := thinking.ExtractReasoningEffort(rawJSON, entryProtocol, modelName)
+		effort := rawSuffixEffort(modelName)
+		if effort == "" {
+			effort = cursor.RequestEffort(entryProtocol, baseModel, rawJSON)
+		}
 		target, _ := cursor.PickAliasVariant(alias.Variants, effort, alias.DefaultEffort)
 		if target == "" {
 			return "", nil, modelNotFoundError(modelName)
@@ -229,7 +232,7 @@ func (h *BaseAPIHandler) gateModelAccess(ctx context.Context, entryProtocol, mod
 	}
 	execOptions.AllowedProviders = providers
 	if allowed[0].key == "cursor" {
-		return h.pinCursorVariant(exposure, cfg, policy, modelName, withSuffix(allowed[0].nativeID, rawSuffix, hasSuffix), rawJSON, execOptions)
+		return h.pinCursorVariant(exposure, cfg, policy, entryProtocol, modelName, withSuffix(allowed[0].nativeID, rawSuffix, hasSuffix), rawJSON, execOptions)
 	}
 	return modelName, rawJSON, nil
 }
@@ -321,8 +324,8 @@ func (h *BaseAPIHandler) HomeModelFiltersError(ctx context.Context) *ModelAccess
 
 // CheckProviderModelAccess applies model exposure and the caller key's policy to a model that a
 // route always sends to one provider (Codex live and realtime, Codex alpha search), registered or
-// not. The model is matched as "<provider prefix>/<model>"; an empty model is refused for a
-// restricted key.
+// not. The model is matched as "<provider prefix>/<model>". Callers pass the effective model
+// (defaults applied); an empty model means the upstream would choose, so it is refused.
 func (h *BaseAPIHandler) CheckProviderModelAccess(ctx context.Context, provider, model string) error {
 	if h == nil {
 		return nil
@@ -348,10 +351,11 @@ func (h *BaseAPIHandler) CheckProviderModelAccess(ctx context.Context, provider,
 		base = rest
 	}
 	if base == "" {
+		// Without a model the upstream picks its own default, which cannot be checked here.
 		if policy.Restricted() {
 			return &ModelAccessError{Status: http.StatusForbidden, Code: "model_not_allowed", Message: "a model is required for this API key"}
 		}
-		return nil
+		return &ModelAccessError{Status: http.StatusBadRequest, Code: "model_required", Message: "a model is required while model exposure is enabled"}
 	}
 	if ok, _ := modelexposure.DecideWithAliases(exposure, cfg.CursorModelAliases, key, base); !ok {
 		return &ModelAccessError{Status: http.StatusBadRequest, Code: "model_not_found", Message: "unknown provider for model " + model}
@@ -367,8 +371,8 @@ func (h *BaseAPIHandler) CheckProviderModelAccess(ctx context.Context, provider,
 // requires exposure and the key policy to admit that variant as well as the requested name, and
 // pins it: the model becomes the variant's registry id with no suffix and the executor is told
 // not to re-pick from the payload effort.
-func (h *BaseAPIHandler) pinCursorVariant(exposure *config.ModelExposureConfig, cfg *config.SDKConfig, policy modelexposure.Policy, modelName, nativeModel string, rawJSON []byte, execOptions *modelExecutionOptions) (string, []byte, *interfaces.ErrorMessage) {
-	upstream := cursor.ResolveUpstreamModel(nativeModel, cursor.ExtractPayloadEffort(rawJSON))
+func (h *BaseAPIHandler) pinCursorVariant(exposure *config.ModelExposureConfig, cfg *config.SDKConfig, policy modelexposure.Policy, entryProtocol, modelName, nativeModel string, rawJSON []byte, execOptions *modelExecutionOptions) (string, []byte, *interfaces.ErrorMessage) {
+	upstream := cursor.ResolveUpstreamModel(nativeModel, cursor.RequestEffort(entryProtocol, thinking.ParseSuffix(nativeModel).ModelName, rawJSON))
 	if strings.TrimSpace(upstream) == "" {
 		return "", nil, modelNotFoundError(modelName)
 	}
@@ -381,4 +385,12 @@ func (h *BaseAPIHandler) pinCursorVariant(exposure *config.ModelExposureConfig, 
 	}
 	execOptions.CursorPinned = true
 	return variant, rewriteModelField(rawJSON, variant), nil
+}
+
+// rawSuffixEffort returns the effort a "(level)" model suffix asks for, if any.
+func rawSuffixEffort(modelName string) string {
+	if parsed := thinking.ParseSuffix(stripComboContextMarker(modelName)); parsed.HasSuffix {
+		return strings.TrimSpace(parsed.RawSuffix)
+	}
+	return ""
 }

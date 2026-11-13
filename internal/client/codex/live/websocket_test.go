@@ -289,3 +289,56 @@ func TestHandleDirectWebsocketRelaysStandardRealtimeFrames(t *testing.T) {
 		t.Fatal("upstream event not captured")
 	}
 }
+
+// The session model is checked when the session is created, so a client session.update cannot
+// switch it: the relay drops "model" from the update and forwards the rest.
+func TestRealtimeWebsocketSessionUpdateCannotChangeModel(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	upstreamUpdate := make(chan []byte, 1)
+	upstreamServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+		connection, errUpgrade := upgrader.Upgrade(writer, request, nil)
+		if errUpgrade != nil {
+			return
+		}
+		defer func() { _ = connection.Close() }()
+		_, payload, errRead := connection.ReadMessage()
+		if errRead != nil {
+			return
+		}
+		upstreamUpdate <- append([]byte(nil), payload...)
+	}))
+	defer upstreamServer.Close()
+
+	manager := auth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(&captureExecutor{})
+	registerCredential(t, manager, &auth.Auth{
+		ID:       "codex-oauth",
+		Provider: "codex",
+		Status:   auth.StatusActive,
+		Metadata: map[string]any{"access_token": "oauth-token"},
+	})
+	handler := NewHandler(manager, nil)
+	handler.sidebandAPIBaseURL = "ws" + strings.TrimPrefix(upstreamServer.URL, "http") + "/v1"
+	router := gin.New()
+	router.GET("/v1/realtime", handler.HandleRealtimeWebsocket)
+	downstreamServer := httptest.NewServer(router)
+	defer downstreamServer.Close()
+
+	connection, _, errDial := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(downstreamServer.URL, "http")+"/v1/realtime?model=gpt-realtime", nil)
+	if errDial != nil {
+		t.Fatalf("dial downstream websocket: %v", errDial)
+	}
+	defer func() { _ = connection.Close() }()
+	if errWrite := connection.WriteMessage(websocket.TextMessage, []byte(`{"type":"session.update","session":{"model":"gpt-other","instructions":"help"}}`)); errWrite != nil {
+		t.Fatalf("write session.update: %v", errWrite)
+	}
+	select {
+	case update := <-upstreamUpdate:
+		if strings.Contains(string(update), "gpt-other") || !strings.Contains(string(update), `"instructions":"help"`) {
+			t.Fatalf("upstream received %s, want the update without its model", update)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("session.update not relayed")
+	}
+}

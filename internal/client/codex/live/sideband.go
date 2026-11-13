@@ -1,6 +1,7 @@
 package live
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
@@ -634,7 +636,7 @@ func websocketCloseFunc(name string, conn *websocket.Conn) func() error {
 
 func relayWebsockets(downstream, upstream *websocket.Conn) error {
 	results := make(chan error, 2)
-	go func() { results <- copyWebsocket(upstream, downstream) }()
+	go func() { results <- copyClientWebsocket(upstream, downstream) }()
 	go func() { results <- copyWebsocket(downstream, upstream) }()
 
 	firstErr := <-results
@@ -646,6 +648,38 @@ func relayWebsockets(downstream, upstream *websocket.Conn) error {
 	_ = upstream.Close()
 	<-results
 	return firstErr
+}
+
+// copyClientWebsocket relays client frames upstream like copyWebsocket, except that a
+// session.update cannot change the session model: the model was checked against model exposure
+// and the API key policy when the session was created, so a "model" in the update is dropped.
+func copyClientWebsocket(destination, source *websocket.Conn) error {
+	for {
+		messageType, payload, errRead := source.ReadMessage()
+		if errRead != nil {
+			return errRead
+		}
+		if messageType == websocket.TextMessage {
+			payload = stripSessionUpdateModel(payload)
+		}
+		if errWrite := destination.WriteMessage(messageType, payload); errWrite != nil {
+			return errWrite
+		}
+	}
+}
+
+func stripSessionUpdateModel(payload []byte) []byte {
+	if !bytes.Contains(payload, []byte("session.update")) {
+		return payload
+	}
+	if ojson.GetBytesNoCopy(payload, "type").String() != "session.update" || !ojson.GetBytesNoCopy(payload, "session.model").Exists() {
+		return payload
+	}
+	stripped, errDelete := ojson.DeleteBytes(payload, "session.model")
+	if errDelete != nil {
+		return payload
+	}
+	return stripped
 }
 
 func copyWebsocket(destination, source *websocket.Conn) error {
