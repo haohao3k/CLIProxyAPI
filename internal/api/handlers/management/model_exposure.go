@@ -192,7 +192,7 @@ func (h *Handler) GetModelExposureCatalog(c *gin.Context) {
 	for _, pm := range registered {
 		key := modelexposure.ProviderKey(pm.Provider)
 		id := pm.Info.ID
-		exposed, reason := modelexposure.Decide(&exposure, key, id)
+		exposed, reason := modelexposure.DecideWithAliases(&exposure, aliases, key, id)
 		entry := catalogModel{
 			Provider:    key,
 			Prefix:      modelexposure.Settings(&exposure, key).Prefix,

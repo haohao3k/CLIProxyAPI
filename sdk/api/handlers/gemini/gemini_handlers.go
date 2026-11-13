@@ -93,7 +93,7 @@ func (h *GeminiAPIHandler) GeminiGetHandler(c *gin.Context) {
 	action := strings.TrimPrefix(request.Action, "/")
 
 	// Get dynamic models from the global registry and find the matching one
-	availableModels := h.Models()
+	availableModels := h.ListModels(handlers.CallerContext(c), "gemini")
 	var targetModel map[string]any
 
 	for _, model := range availableModels {

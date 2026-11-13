@@ -407,8 +407,9 @@ func isKnownDefaultValue(path []string, node *yaml.Node) bool {
 		return false
 	}
 
-	// Pointer-backed booleans (such as cache-user-id and disable-cooling): explicit false is meaningful and must be preserved.
-	if len(path) > 0 && (path[len(path)-1] == "cache-user-id" || path[len(path)-1] == "disable-cooling") && node != nil && node.Kind == yaml.ScalarNode && node.Tag == "!!bool" {
+	// Booleans whose explicit false is meaningful (pointer-backed cache-user-id and disable-cooling;
+	// accept-bare-ids, which decodes as true when omitted) must be preserved.
+	if len(path) > 0 && (path[len(path)-1] == "cache-user-id" || path[len(path)-1] == "disable-cooling" || path[len(path)-1] == "accept-bare-ids") && node != nil && node.Kind == yaml.ScalarNode && node.Tag == "!!bool" {
 		return false
 	}
 

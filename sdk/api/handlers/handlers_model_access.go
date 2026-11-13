@@ -203,7 +203,7 @@ func (h *BaseAPIHandler) gateModelAccess(ctx context.Context, entryProtocol, mod
 	}
 	exposed := candidates[:0:0]
 	for _, c := range candidates {
-		if ok, _ := modelexposure.Decide(exposure, c.key, c.nativeID); ok {
+		if ok, _ := modelexposure.DecideWithAliases(exposure, cfg.CursorModelAliases, c.key, c.nativeID); ok {
 			exposed = append(exposed, c)
 		}
 	}

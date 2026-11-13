@@ -206,3 +206,12 @@ func (p Policy) AllowsCombo(name string) bool {
 	}
 	return false
 }
+
+// DecideWithAliases is Decide, except that a Cursor model whose exposed name a Cursor alias also
+// takes is hidden: the alias owns that name and the model stays reachable only through it.
+func DecideWithAliases(cfg *config.ModelExposureConfig, aliases []config.CursorModelAlias, key, nativeID string) (bool, string) {
+	if key == "cursor" && FindAlias(aliases, ShortID(key, nativeID)) != nil {
+		return false, ReasonAlias
+	}
+	return Decide(cfg, key, nativeID)
+}

@@ -13,7 +13,7 @@ import (
 )
 
 // The management writes persist to config.yaml in the v8 layout and survive a reload, and api-keys
-// edits carry key policies along (rotation keeps the policy, removal drops it).
+// edits on v0 and v8 carry key policies along (rotation keeps the policy, removal drops it).
 func TestModelExposureManagementRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	raw := "config-version: 8\naccess:\n  api-keys:\n    - key-a\n    - key-b\n"
@@ -34,6 +34,7 @@ func TestModelExposureManagementRoundTrip(t *testing.T) {
 	router.PATCH("/api-key-policies", h.PatchAPIKeyPolicy)
 	router.PATCH("/api-keys", h.PatchAPIKeys)
 	router.DELETE("/api-keys", h.DeleteAPIKeys)
+	router.PUT("/v8/management/config/*path", h.ConfigV8)
 	send := func(method, url, body string, want int) string {
 		t.Helper()
 		rec := httptest.NewRecorder()
@@ -62,6 +63,8 @@ func TestModelExposureManagementRoundTrip(t *testing.T) {
 
 	send(http.MethodPatch, "/api-keys", `{"old":"key-a","new":"key-a2"}`, http.StatusOK)
 	send(http.MethodDelete, "/api-keys?value=key-b", "", http.StatusOK)
+	send(http.MethodPut, "/v8/management/config/access/api-keys", `["key-a2"]`, http.StatusOK) // no change: no sync
+	send(http.MethodPut, "/v8/management/config/access/api-keys", `["key-a3"]`, http.StatusOK)
 
 	loaded, err := config.LoadConfig(path)
 	if err != nil {
@@ -75,7 +78,7 @@ func TestModelExposureManagementRoundTrip(t *testing.T) {
 	if len(loaded.CursorModelAliases) != 1 || loaded.CursorModelAliases[0].Variants["high"] != "cursor-ds-high" {
 		t.Fatalf("cursor-model-aliases after reload = %+v", loaded.CursorModelAliases)
 	}
-	if len(loaded.APIKeyPolicies) != 1 || loaded.APIKeyPolicies[0].Key != "key-a2" || !loaded.APIKeyPolicies[0].Restricted {
-		t.Fatalf("key policies after rotate+delete = %+v, want only key-a2", loaded.APIKeyPolicies)
+	if len(loaded.APIKeyPolicies) != 1 || loaded.APIKeyPolicies[0].Key != "key-a3" || !loaded.APIKeyPolicies[0].Restricted {
+		t.Fatalf("key policies after rotate+delete = %+v, want only key-a3", loaded.APIKeyPolicies)
 	}
 }

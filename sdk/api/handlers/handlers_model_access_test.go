@@ -238,3 +238,37 @@ func TestAPIKeyPolicyGatesEveryEntryPoint(t *testing.T) {
 		t.Fatalf("count: err = %+v, want 403", errMsg)
 	}
 }
+
+// An alias that takes a model's exposed name owns it: listed once, routed by the alias, and the
+// model itself is reachable only through the alias.
+func TestCursorAliasOwnsCollidingModelName(t *testing.T) {
+	f := newModelAccessFixture(t)
+	f.cfg.CursorModelAliases = append(f.cfg.CursorModelAliases, config.CursorModelAlias{
+		Alias: "mx-opus", Variants: map[string]string{"high": "cursor-mx-ds-high"},
+	})
+	ctx := context.Background()
+
+	if got := strings.Join(f.listIDs(ctx), ","); got != "codex/mx-gpt-open,cur/mx-ds,cur/mx-opus,mx-combo" {
+		t.Fatalf("listed = %s", got)
+	}
+	var owner string
+	for _, m := range f.handler.ListModels(ctx, "openai") {
+		if m["id"] == "cur/mx-opus" {
+			owner, _ = m["owned_by"].(string)
+		}
+	}
+	if owner != "cursor" {
+		t.Fatalf("cur/mx-opus listed from %q, want the alias entry", owner)
+	}
+	if got, errMsg := f.run(ctx, "cur/mx-opus", ""); errMsg != nil || got != "cursor-mx-ds-high" {
+		t.Fatalf("cur/mx-opus executed %q (err %+v), want the alias variant cursor-mx-ds-high", got, errMsg)
+	}
+	if _, errMsg := f.run(ctx, "cursor-mx-opus", ""); errMsg == nil {
+		t.Fatal("the shadowed model stayed callable by its registry id")
+	}
+
+	f.cfg.ModelExposure.ListPrefixedOnly = false
+	if got := strings.Join(f.listIDs(ctx), ","); got != "codex/mx-gpt-open,cur/mx-ds,cur/mx-opus,mx-combo,mx-ds,mx-gpt-open,mx-opus" {
+		t.Fatalf("list-prefixed-only=false listed = %s, want prefixed and bare ids", got)
+	}
+}

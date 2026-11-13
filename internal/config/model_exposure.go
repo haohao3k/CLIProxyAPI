@@ -1,6 +1,11 @@
 package config
 
-import "strings"
+import (
+	"encoding/json"
+	"strings"
+
+	"gopkg.in/yaml.v3"
+)
 
 // Model exposure modes for a provider.
 const (
@@ -15,11 +20,34 @@ type ModelExposureConfig struct {
 	Enabled bool `yaml:"enabled" json:"enabled"`
 	// ListPrefixedOnly lists combos and "<prefix>/<id>" names only, without bare ids.
 	ListPrefixedOnly bool `yaml:"list-prefixed-only" json:"list-prefixed-only"`
-	// AcceptBareIDs lets requests name an exposed model by its bare id.
+	// AcceptBareIDs lets requests name an exposed model by its bare id. Omitted means true.
 	AcceptBareIDs bool `yaml:"accept-bare-ids" json:"accept-bare-ids"`
 	// Providers is keyed by provider key (codex, cursor, opencode, mistral, zai, ...) or by an
 	// openai-compatibility entry name. A provider without an entry uses mode "all" and its key as prefix.
 	Providers map[string]ModelExposureProvider `yaml:"providers,omitempty" json:"providers"`
+}
+
+type modelExposureFields ModelExposureConfig
+
+// UnmarshalYAML decodes the section with accept-bare-ids defaulting to true, so a hand-written
+// section that omits it keeps bare-id clients working.
+func (e *ModelExposureConfig) UnmarshalYAML(node *yaml.Node) error {
+	fields := modelExposureFields{AcceptBareIDs: true}
+	if err := node.Decode(&fields); err != nil {
+		return err
+	}
+	*e = ModelExposureConfig(fields)
+	return nil
+}
+
+// UnmarshalJSON decodes the section with accept-bare-ids defaulting to true.
+func (e *ModelExposureConfig) UnmarshalJSON(data []byte) error {
+	fields := modelExposureFields{AcceptBareIDs: true}
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	*e = ModelExposureConfig(fields)
+	return nil
 }
 
 // ModelExposureProvider is the exposure rule for one provider.

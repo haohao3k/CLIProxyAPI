@@ -60,7 +60,7 @@ func (h *BaseAPIHandler) listModels(ctx context.Context, handlerType string, pre
 		anyVisible := false
 		for _, provider := range reg.GetModelProviders(id) {
 			key := modelexposure.ProviderKey(provider)
-			if ok, _ := modelexposure.Decide(exposure, key, id); !ok {
+			if ok, _ := modelexposure.DecideWithAliases(exposure, cfg.CursorModelAliases, key, id); !ok {
 				continue
 			}
 			exposedID := modelexposure.ExposedID(exposure, key, id)

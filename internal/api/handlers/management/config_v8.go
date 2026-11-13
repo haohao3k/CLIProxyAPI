@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"reflect"
+	"slices"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -197,6 +198,17 @@ func (h *Handler) ConfigV8(c *gin.Context) {
 	if err = WriteConfig(h.configFilePath, data); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "write_failed", "message": err.Error()})
 		return
+	}
+	// An access.api-keys edit carries key policies along, as the v0 api-keys endpoints do.
+	if !slices.Equal(h.cfg.APIKeys, next.APIKeys) {
+		policies := slices.Clone(next.APIKeyPolicies)
+		next.SyncAPIKeyPolicies(h.cfg.APIKeys)
+		if !reflect.DeepEqual(policies, next.APIKeyPolicies) {
+			if err = config.SaveConfigPreserveComments(h.configFilePath, next, true); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "write_failed", "message": err.Error()})
+				return
+			}
+		}
 	}
 	// Runtime-only ownership state is never sourced from an uploaded YAML document.
 	next.Home = h.cfg.Home
