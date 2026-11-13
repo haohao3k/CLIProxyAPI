@@ -30,6 +30,18 @@ func SanitizeMistralChatRequestDoc(doc *ojson.Doc, baseURL string) {
 	_ = doc.Delete("stream_options")
 	// Mistral rejects the client_metadata field some clients attach.
 	_ = doc.Delete("client_metadata")
+	// Mistral's schema forbids extra fields (422 extra_forbidden) for these OpenAI
+	// Chat Completions fields.
+	for _, field := range []string{"store", "user", "logit_bias", "safety_identifier", "verbosity"} {
+		_ = doc.Delete(field)
+	}
+	// OpenAI names with a Mistral equivalent: keep the value under Mistral's name.
+	renameMistralFieldDoc(doc, "seed", "random_seed")
+	renameMistralFieldDoc(doc, "max_completion_tokens", "max_tokens")
+	// top_logprobs is only valid together with logprobs=true (400 otherwise).
+	if !doc.Get("logprobs").Bool() {
+		_ = doc.Delete("top_logprobs")
+	}
 	if tools := doc.Get("tools"); tools.IsArray() && len(tools.Array()) == 0 {
 		_ = doc.Delete("tools")
 		_ = doc.Delete("tool_choice")
@@ -84,6 +96,18 @@ func SanitizeMistralChatRequestDoc(doc *ojson.Doc, baseURL string) {
 			_ = doc.Delete(path + ".reasoning_details")
 		}
 	}
+}
+
+// renameMistralFieldDoc moves from to to unless to is already set; from is always removed.
+func renameMistralFieldDoc(doc *ojson.Doc, from, to string) {
+	value := doc.Get(from)
+	if !value.Exists() {
+		return
+	}
+	if !doc.Get(to).Exists() {
+		_ = doc.SetRaw(to, value.Raw)
+	}
+	_ = doc.Delete(from)
 }
 
 // sanitizeMistralReasoningEffortDoc normalizes or strips reasoning_effort for

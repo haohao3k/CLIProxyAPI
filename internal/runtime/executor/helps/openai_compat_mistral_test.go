@@ -46,6 +46,53 @@ func TestSanitizeMistralChatRequestDocUpstreamBoundary(t *testing.T) {
 	}
 }
 
+func TestSanitizeMistralChatRequestDocDropsOpenAIOnlyFields(t *testing.T) {
+	for _, tc := range []struct {
+		name, input, want string
+	}{
+		{
+			name:  "forbidden extras removed",
+			input: `{"model":"m","store":false,"user":"u","logit_bias":{},"safety_identifier":"s","verbosity":"low","service_tier":"auto","metadata":{"a":"b"},"messages":[]}`,
+			want:  `{"model":"m","service_tier":"auto","metadata":{"a":"b"},"messages":[]}`,
+		},
+		{
+			name:  "seed and max_completion_tokens renamed",
+			input: `{"seed":7,"max_completion_tokens":64,"messages":[]}`,
+			want:  `{"random_seed":7,"max_tokens":64,"messages":[]}`,
+		},
+		{
+			name:  "existing mistral names win",
+			input: `{"seed":7,"random_seed":1,"max_completion_tokens":64,"max_tokens":10,"messages":[]}`,
+			want:  `{"random_seed":1,"max_tokens":10,"messages":[]}`,
+		},
+		{
+			name:  "top_logprobs dropped without logprobs",
+			input: `{"logprobs":false,"top_logprobs":0,"messages":[]}`,
+			want:  `{"logprobs":false,"messages":[]}`,
+		},
+		{
+			name:  "top_logprobs kept with logprobs",
+			input: `{"logprobs":true,"top_logprobs":2,"messages":[]}`,
+			want:  `{"logprobs":true,"top_logprobs":2,"messages":[]}`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			doc := ojson.NewDocString(tc.input)
+			SanitizeMistralChatRequestDoc(doc, "https://api.mistral.ai/v1")
+			if got, want := ojson.ParseBytes(doc.Bytes()).Value(), ojson.Parse(tc.want).Value(); !reflect.DeepEqual(got, want) {
+				t.Fatalf("got %s, want %s", doc.Bytes(), tc.want)
+			}
+		})
+	}
+	// Non-Mistral upstreams keep every field.
+	const other = `{"store":false,"user":"u","seed":7,"messages":[]}`
+	doc := ojson.NewDocString(other)
+	SanitizeMistralChatRequestDoc(doc, "https://api.deepseek.com/v1")
+	if string(doc.Bytes()) != other {
+		t.Fatalf("non-Mistral payload changed: %s", doc.Bytes())
+	}
+}
+
 func TestSanitizeMistralChatRequestDocPreservesConversation(t *testing.T) {
 	for _, tc := range []struct {
 		name string
