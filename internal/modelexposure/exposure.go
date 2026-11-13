@@ -94,22 +94,29 @@ func Settings(cfg *config.ModelExposureConfig, key string) config.ModelExposureP
 	return config.ModelExposureProvider{Prefix: key, Mode: config.ModelExposureModeAll}
 }
 
-// ShortID drops the provider's native id prefix (cursor-claude-opus-5 -> claude-opus-5).
+// ShortID drops the provider's native id prefix (cursor-claude-opus-5 -> claude-opus-5) and a
+// credential prefix equal to the provider key (zcode-proxy/glm-5.3-flash -> glm-5.3-flash), so
+// the exposed name never repeats the prefix.
 func ShortID(key, nativeID string) string {
 	nativeID = strings.TrimSpace(nativeID)
+	if credential := key + "/"; len(nativeID) > len(credential) && strings.EqualFold(nativeID[:len(credential)], credential) {
+		nativeID = nativeID[len(credential):]
+	}
 	if prefix, ok := nativeIDPrefixes[key]; ok && len(nativeID) > len(prefix) && strings.EqualFold(nativeID[:len(prefix)], prefix) {
 		return nativeID[len(prefix):]
 	}
 	return nativeID
 }
 
-// NativeCandidates returns the registry ids a short id may stand for under a provider.
+// NativeCandidates returns the registry ids a short id may stand for under a provider, in order
+// of preference; the last is the id under a credential prefix equal to the provider key.
 func NativeCandidates(key, shortID string) []string {
 	shortID = strings.TrimSpace(shortID)
+	out := []string{shortID}
 	if prefix, ok := nativeIDPrefixes[key]; ok && !strings.HasPrefix(strings.ToLower(shortID), prefix) {
-		return []string{prefix + shortID, shortID}
+		out = []string{prefix + shortID, shortID}
 	}
-	return []string{shortID}
+	return append(out, key+"/"+shortID)
 }
 
 // ExposedID is the name a provider's model is listed and matched under.

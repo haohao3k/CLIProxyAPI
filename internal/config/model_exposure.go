@@ -27,6 +27,12 @@ type ModelExposureConfig struct {
 	Providers map[string]ModelExposureProvider `yaml:"providers,omitempty" json:"providers"`
 }
 
+// IsZero reports the default section (disabled, bare ids accepted, no providers), which the
+// YAML encoder then omits like an absent section.
+func (e ModelExposureConfig) IsZero() bool {
+	return !e.Enabled && !e.ListPrefixedOnly && e.AcceptBareIDs && len(e.Providers) == 0
+}
+
 type modelExposureFields ModelExposureConfig
 
 // UnmarshalYAML decodes the section with accept-bare-ids defaulting to true, so a hand-written

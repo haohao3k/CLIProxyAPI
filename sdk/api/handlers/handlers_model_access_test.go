@@ -360,3 +360,35 @@ func TestProviderModelAccessAndHomeRefusal(t *testing.T) {
 		t.Fatalf("Home mode with filters active: %+v, want 503", errMsg)
 	}
 }
+
+// An openai-compatibility model registered under a credential prefix equal to the provider key is
+// listed once under that prefix, not doubled, and stays callable by that name.
+func TestCredentialPrefixedModelIsNotDoublePrefixed(t *testing.T) {
+	f := newModelAccessFixture(t)
+	compat := &modelExecutionCaptureExecutor{provider: "openai-compatible-zp-mx"}
+	f.handler.AuthManager.RegisterExecutor(compat)
+	auth := &coreauth.Auth{ID: "mx-zp", Provider: compat.provider, Status: coreauth.StatusActive}
+	if _, err := f.handler.AuthManager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: "zp-mx/mx-glm", Object: "model"}})
+	t.Cleanup(func() { reg.UnregisterClient(auth.ID) })
+	f.cfg.ModelExposure.AcceptBareIDs = false
+
+	var listed []string
+	for _, m := range f.handler.ListModels(context.Background(), "openai") {
+		if id, _ := m["id"].(string); strings.Contains(id, "mx-glm") {
+			listed = append(listed, id)
+		}
+	}
+	if strings.Join(listed, ",") != "zp-mx/mx-glm" {
+		t.Fatalf("listed %v, want [zp-mx/mx-glm]", listed)
+	}
+	if _, _, errMsg := f.handler.ExecuteWithAuthManager(context.Background(), "openai", "zp-mx/mx-glm", []byte(`{"model":"zp-mx/mx-glm"}`), ""); errMsg != nil {
+		t.Fatalf("calling the listed name: %+v", errMsg)
+	}
+	if got, _ := compat.captured(); got.Model != "zp-mx/mx-glm" {
+		t.Fatalf("executed %q, want the registry id zp-mx/mx-glm", got.Model)
+	}
+}

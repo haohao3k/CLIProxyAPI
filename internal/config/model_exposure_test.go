@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -26,6 +27,16 @@ func TestModelExposureAcceptBareIDsDefaultsToTrue(t *testing.T) {
 		if fromYAML.AcceptBareIDs != tc.want || fromJSON.AcceptBareIDs != tc.want || !fromYAML.Enabled || !fromJSON.Enabled {
 			t.Fatalf("%q: yaml=%+v json=%+v, want accept-bare-ids=%v", tc.yamlDoc, fromYAML, fromJSON, tc.want)
 		}
+	}
+	// No section at all: the effective default is reported, and saving does not add a section.
+	absent, err := ParseConfigBytes([]byte("config-version: 8\n"))
+	if err != nil || !absent.ModelExposure.AcceptBareIDs {
+		t.Fatalf("config without model-exposure: accept-bare-ids=%v err=%v, want true", absent.ModelExposure.AcceptBareIDs, err)
+	}
+	if out, _ := yaml.Marshal(struct {
+		M ModelExposureConfig `yaml:"model-exposure,omitempty"`
+	}{absent.ModelExposure}); strings.Contains(string(out), "model-exposure") {
+		t.Fatalf("default section is written on save: %s", out)
 	}
 	cfg, err := ParseConfigBytes([]byte("config-version: 8\nmodel-exposure:\n  enabled: true\n"))
 	if err != nil {

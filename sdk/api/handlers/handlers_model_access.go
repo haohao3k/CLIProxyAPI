@@ -197,6 +197,13 @@ func (h *BaseAPIHandler) gateModelAccess(ctx context.Context, entryProtocol, mod
 	}
 
 	candidates, viaPrefix := resolveModelCandidates(cfg, baseModel)
+	for _, c := range candidates {
+		// A registry id that already equals its exposed name (a credential prefix equal to the
+		// provider key) is the prefixed form, not a bare id.
+		if strings.EqualFold(baseModel, c.exposedID(exposure)) {
+			viaPrefix = true
+		}
+	}
 	if exposure.Enabled && !viaPrefix && !exposure.AcceptBareIDs {
 		return "", nil, modelNotFoundError(modelName)
 	}
