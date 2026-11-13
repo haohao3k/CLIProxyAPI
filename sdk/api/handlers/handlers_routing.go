@@ -126,6 +126,18 @@ func nativeInteractionsExecutionError() *interfaces.ErrorMessage {
 // router selected a built-in provider, it skips model->provider resolution and uses the router's
 // provider (with an optional target model); otherwise it falls back to the registry-based path.
 func (h *BaseAPIHandler) providersForExecution(modelName, originalRequestedModel string, allowImageModel bool, routeDecision modelRouteDecision, execOptions modelExecutionOptions) ([]string, string, *interfaces.ErrorMessage) {
+	providers, normalizedModel, errMsg := h.providersForExecutionUnrestricted(modelName, originalRequestedModel, allowImageModel, routeDecision, execOptions)
+	if errMsg != nil {
+		return nil, "", errMsg
+	}
+	providers, errMsg = restrictProviders(providers, execOptions.AllowedProviders, originalRequestedModel)
+	if errMsg != nil {
+		return nil, "", errMsg
+	}
+	return providers, normalizedModel, nil
+}
+
+func (h *BaseAPIHandler) providersForExecutionUnrestricted(modelName, originalRequestedModel string, allowImageModel bool, routeDecision modelRouteDecision, execOptions modelExecutionOptions) ([]string, string, *interfaces.ErrorMessage) {
 	forcedProvider := strings.ToLower(strings.TrimSpace(execOptions.ForcedProvider))
 	if forcedProvider != "" {
 		if routeDecision.ExecutorPluginID != "" {
@@ -206,6 +218,19 @@ func (h *BaseAPIHandler) getRequestDetailsWithOptions(modelName string, allowIma
 	// custom model registrations that include thinking suffixes.
 	if len(providers) == 0 && baseModel != resolvedModelName {
 		providers = util.GetProviderName(resolvedModelName)
+	}
+	if len(providers) == 0 && h != nil {
+		if cfg := h.CurrentConfig(); cfg != nil {
+			if candidates := prefixedCandidates(&cfg.ModelExposure, baseModel); len(candidates) > 0 {
+				parsedResolved := thinking.ParseSuffix(resolvedModelName)
+				for _, c := range candidates {
+					if c.nativeID == candidates[0].nativeID {
+						providers = append(providers, c.registryProvider)
+					}
+				}
+				resolvedModelName = withSuffix(candidates[0].nativeID, strings.TrimSpace(parsedResolved.RawSuffix), parsedResolved.HasSuffix && strings.TrimSpace(parsedResolved.RawSuffix) != "")
+			}
+		}
 	}
 	if len(providers) == 0 {
 		if qualProviders, qualModel := resolveProviderQualifiedModel(baseModel, resolvedModelName); len(qualProviders) > 0 {

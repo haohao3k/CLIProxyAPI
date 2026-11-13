@@ -116,6 +116,15 @@ type SDKConfig struct {
 
 	// Combos defines 9router-style ordered model fallback chains (or round-robin pools).
 	Combos []ComboConfig `yaml:"combos,omitempty" json:"combos,omitempty"`
+
+	// ModelExposure controls which models are listed and directly callable, and their prefixes.
+	ModelExposure ModelExposureConfig `yaml:"model-exposure,omitempty" json:"model-exposure"`
+
+	// CursorModelAliases collapses Cursor effort variants into one model name.
+	CursorModelAliases []CursorModelAlias `yaml:"cursor-model-aliases,omitempty" json:"cursor-model-aliases,omitempty"`
+
+	// APIKeyPolicies restricts the models each client API key may call (v8 path access.key-policies).
+	APIKeyPolicies []APIKeyPolicy `yaml:"api-key-policies,omitempty" json:"api-key-policies,omitempty"`
 }
 
 const (

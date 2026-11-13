@@ -132,6 +132,15 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PUT("/routing/strategy", s.mgmt.PutRoutingStrategy)
 		mgmt.PATCH("/routing/strategy", s.mgmt.PutRoutingStrategy)
 
+		mgmt.GET("/model-exposure", s.mgmt.GetModelExposure)
+		mgmt.PUT("/model-exposure", s.mgmt.PutModelExposure)
+		mgmt.GET("/model-exposure/catalog", s.mgmt.GetModelExposureCatalog)
+		mgmt.GET("/cursor-model-aliases", s.mgmt.GetCursorModelAliases)
+		mgmt.PUT("/cursor-model-aliases", s.mgmt.PutCursorModelAliases)
+		mgmt.GET("/api-key-policies", s.mgmt.GetAPIKeyPolicies)
+		mgmt.PUT("/api-key-policies", s.mgmt.PutAPIKeyPolicies)
+		mgmt.PATCH("/api-key-policies", s.mgmt.PatchAPIKeyPolicy)
+
 		mgmt.GET("/combos", s.mgmt.GetCombos)
 		mgmt.PUT("/combos", s.mgmt.PutCombos)
 		mgmt.POST("/combos", s.mgmt.PostCombo)

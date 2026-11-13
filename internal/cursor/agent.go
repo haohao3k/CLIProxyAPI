@@ -1450,3 +1450,56 @@ func (s *AgentDuplexSession) Consume(upstreamModel string, onEvent func(AgentStr
 	}
 	return nil
 }
+
+// NormalizeEffort maps an effort label or thinking budget onto a canonical Cursor effort level.
+func NormalizeEffort(raw string) string { return normalizeCursorEffort(raw) }
+
+// PickAliasVariant selects the variant of a user-defined alias for the requested effort:
+// the exact level when defined, else the nearest defined level. Without a requested effort
+// it uses defaultEffort (medium when unset). It returns the target id and its level.
+func PickAliasVariant(variants map[string]string, effort, defaultEffort string) (string, string) {
+	canonical := make(map[string]string, len(variants))
+	for level, target := range variants {
+		if lvl := normalizeCursorEffort(level); lvl != "" && strings.TrimSpace(target) != "" {
+			canonical[lvl] = strings.TrimSpace(target)
+		}
+	}
+	want := normalizeCursorEffort(effort)
+	if want == "" {
+		want = normalizeCursorEffort(defaultEffort)
+	}
+	if want == "" {
+		want = "medium"
+	}
+	if target, ok := canonical[want]; ok {
+		return target, want
+	}
+	// Same rule as pickNearestVariant: nearest rank, ties go to the higher tier.
+	wantRank, ok := effortRank[want]
+	if !ok {
+		wantRank = effortRank["medium"]
+	}
+	bestLevel, bestDist := "", 999
+	for _, level := range canonicalEffortOrder {
+		if _, exists := canonical[level]; !exists {
+			continue
+		}
+		dist := effortRank[level] - wantRank
+		if dist < 0 {
+			dist = -dist
+		}
+		if dist <= bestDist {
+			bestDist, bestLevel = dist, level
+		}
+	}
+	if bestLevel == "" {
+		return "", ""
+	}
+	return canonical[bestLevel], bestLevel
+}
+
+// HasExplicitVariant reports whether a Cursor model id names one effort variant itself.
+func HasExplicitVariant(id string) bool {
+	_, _, ok := ParseVariantSuffix(strings.TrimPrefix(strings.TrimSpace(id), "cursor-"))
+	return ok
+}

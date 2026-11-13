@@ -43,6 +43,10 @@ type OpenAICompatibility = internalconfig.OpenAICompatibility
 type OpenAICompatibilityAPIKey = internalconfig.OpenAICompatibilityAPIKey
 type OpenAICompatibilityModel = internalconfig.OpenAICompatibilityModel
 type ComboConfig = internalconfig.ComboConfig
+type ModelExposureConfig = internalconfig.ModelExposureConfig
+type ModelExposureProvider = internalconfig.ModelExposureProvider
+type CursorModelAlias = internalconfig.CursorModelAlias
+type APIKeyPolicy = internalconfig.APIKeyPolicy
 
 const (
 	ComboStrategyFallback   = internalconfig.ComboStrategyFallback

@@ -25,7 +25,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
 	. "github.com/router-for-me/CLIProxyAPI/v8/internal/constant"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
@@ -59,9 +58,7 @@ func (h *ClaudeCodeAPIHandler) HandlerType() string {
 
 // Models returns a list of models supported by this handler.
 func (h *ClaudeCodeAPIHandler) Models() []map[string]any {
-	// Get dynamic models from the global registry
-	modelRegistry := registry.GetGlobalRegistry()
-	return h.AppendComboModels("claude", modelRegistry.GetAvailableModels("claude"))
+	return h.ListModels(nil, "claude")
 }
 
 // ClaudeMessages handles Claude-compatible streaming chat completions.
@@ -160,7 +157,7 @@ func rewriteClaudeDDModelInBody(rawJSON []byte) []byte {
 func (h *ClaudeCodeAPIHandler) ClaudeModels(c *gin.Context) {
 	cfg := h.CurrentConfig()
 	disableCloaking := cfg != nil && cfg.ClaudeCode.DisableCloakingModelList
-	h.WriteModelListResponse(c, h.HandlerType(), claudemodels.BuildResponse(h.Models(), disableCloaking))
+	h.WriteModelListResponse(c, h.HandlerType(), claudemodels.BuildResponse(h.ListModels(handlers.CallerContext(c), "claude"), disableCloaking))
 }
 
 // handleNonStreamingResponse handles non-streaming content generation requests for Claude models.

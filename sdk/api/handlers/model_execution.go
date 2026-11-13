@@ -30,6 +30,10 @@ type modelExecutionOptions struct {
 	CallerScope             string
 	AllowSpeechModel        bool
 	VisitedCombos           map[string]bool
+	// ModelAccessChecked marks a request the model access gate has already admitted.
+	ModelAccessChecked bool
+	// AllowedProviders, when non-nil, limits execution to these providers (set by the gate).
+	AllowedProviders []string
 }
 
 // ProtocolExecutionRequest describes a route-level model execution request with explicit protocols.

@@ -129,6 +129,37 @@ access:
     - "your-api-key-1"
     - "your-api-key-2"
     - "your-api-key-3"
+  # Optional per-key model access. Patterns match listed names ("<prefix>/<id>", '*' wildcard,
+  # case-insensitive); "combo:<name>" allows a combo, which may then run models the key cannot call.
+  # restricted: true with an empty allow list denies everything.
+  # key-policies:
+  #   - key: "your-api-key-2"
+  #     restricted: true
+  #     allow: ["combo:coding", "cursor/claude-*", "codex/gpt-6-sol"]
+
+# Optional model exposure. Disabled (the default) lists and accepts every registered model.
+# When enabled, /v1/models lists "<prefix>/<id>" names and combos, and hidden models are rejected
+# unless a combo calls them. A provider without an entry uses mode all and its key as prefix.
+# model-exposure:
+#   enabled: true
+#   list-prefixed-only: true   # list no bare ids
+#   accept-bare-ids: true      # still accept "gpt-6-sol" for an exposed codex/gpt-6-sol
+#   providers:                 # provider key, or an openai-compatibility entry name
+#     cursor:
+#       prefix: cursor         # cursor-claude-opus-5 is listed as cursor/claude-opus-5
+#       mode: allowlist        # all | allowlist | none
+#       allow: ["claude-opus-5", "gpt-5.6*"]
+#       deny: ["*-fast"]       # applies in every mode
+
+# Optional Cursor effort aliases: one name whose variant follows the request's reasoning effort
+# (nearest defined level; default-effort when the request sets none). Listed under the cursor prefix.
+# cursor-model-aliases:
+#   - alias: deepseek-v4.1-flash
+#     default-effort: medium
+#     variants:
+#       low: cursor-deepseek-v41-flash-1017-low
+#       medium: cursor-deepseek-v41-flash-1017
+#       high: cursor-deepseek-v41-flash-1017-high
 
 # Optional credential concurrency and observation contracts.
 

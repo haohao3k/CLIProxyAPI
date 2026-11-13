@@ -16,7 +16,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
 	. "github.com/router-for-me/CLIProxyAPI/v8/internal/constant"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
 )
 
@@ -41,15 +40,13 @@ func (h *GeminiAPIHandler) HandlerType() string {
 
 // Models returns the Gemini-compatible model metadata supported by this handler.
 func (h *GeminiAPIHandler) Models() []map[string]any {
-	// Get dynamic models from the global registry
-	modelRegistry := registry.GetGlobalRegistry()
-	return h.AppendComboModels("gemini", modelRegistry.GetAvailableModels("gemini"))
+	return h.ListModels(nil, "gemini")
 }
 
 // GeminiModels handles the Gemini models listing endpoint.
 // It returns a JSON response containing available Gemini models and their specifications.
 func (h *GeminiAPIHandler) GeminiModels(c *gin.Context) {
-	rawModels := h.Models()
+	rawModels := h.ListModels(handlers.CallerContext(c), "gemini")
 	normalizedModels := make([]map[string]any, 0, len(rawModels))
 	defaultMethods := []string{"generateContent"}
 	for _, model := range rawModels {

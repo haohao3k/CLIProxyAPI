@@ -156,16 +156,29 @@ func (h *Handler) deleteFromStringList(c *gin.Context, targetOf func() *[]string
 
 // api-keys
 func (h *Handler) GetAPIKeys(c *gin.Context) { c.JSON(200, gin.H{"api-keys": h.cfg.APIKeys}) }
+
+// API key edits carry key policies along: a key changed in place keeps its policy and a
+// removed key's policy is dropped (config.SDKConfig.SyncAPIKeyPolicies).
 func (h *Handler) PutAPIKeys(c *gin.Context) {
 	h.putStringList(c, func(v []string) {
+		before := append([]string(nil), h.cfg.APIKeys...)
 		h.cfg.APIKeys = append([]string(nil), v...)
+		h.cfg.SyncAPIKeyPolicies(before)
 	}, nil)
 }
 func (h *Handler) PatchAPIKeys(c *gin.Context) {
-	h.patchStringList(c, func() *[]string { return &h.cfg.APIKeys }, func() {})
+	var before []string
+	h.patchStringList(c, func() *[]string {
+		before = append([]string(nil), h.cfg.APIKeys...)
+		return &h.cfg.APIKeys
+	}, func() { h.cfg.SyncAPIKeyPolicies(before) })
 }
 func (h *Handler) DeleteAPIKeys(c *gin.Context) {
-	h.deleteFromStringList(c, func() *[]string { return &h.cfg.APIKeys }, func() {})
+	var before []string
+	h.deleteFromStringList(c, func() *[]string {
+		before = append([]string(nil), h.cfg.APIKeys...)
+		return &h.cfg.APIKeys
+	}, func() { h.cfg.SyncAPIKeyPolicies(before) })
 }
 
 // gemini-api-key: []GeminiKey

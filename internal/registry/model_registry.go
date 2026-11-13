@@ -2115,3 +2115,46 @@ func (r *ModelRegistry) GetModelsForClient(clientID string) []*ModelInfo {
 	models, _ := r.GetModelsAndEpochForClient(clientID)
 	return models
 }
+
+// ProviderModel is one model as served by one provider.
+type ProviderModel struct {
+	Provider string
+	Info     *ModelInfo
+}
+
+// RegisteredProviderModels returns every registered model once per provider serving it, whether or
+// not it is currently available, sorted by provider then model id.
+func (r *ModelRegistry) RegisteredProviderModels() []ProviderModel {
+	r.mutex.RLock()
+	defer r.mutex.RUnlock()
+	out := make([]ProviderModel, 0, len(r.models))
+	for modelID, registration := range r.models {
+		if registration == nil {
+			continue
+		}
+		for provider, count := range registration.Providers {
+			if count <= 0 {
+				continue
+			}
+			info := registration.InfoByProvider[provider]
+			if info == nil {
+				info = registration.Info
+			}
+			cloned := cloneModelInfo(info)
+			if cloned == nil {
+				cloned = &ModelInfo{ID: modelID}
+			}
+			if cloned.ID == "" {
+				cloned.ID = modelID
+			}
+			out = append(out, ProviderModel{Provider: provider, Info: cloned})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Provider != out[j].Provider {
+			return out[i].Provider < out[j].Provider
+		}
+		return out[i].Info.ID < out[j].Info.ID
+	})
+	return out
+}

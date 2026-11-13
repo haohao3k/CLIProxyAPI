@@ -334,7 +334,20 @@ func (h *BaseAPIHandler) executeStreamWithAuthManager(ctx context.Context, handl
 }
 
 func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context, entryProtocol, exitProtocol, modelName string, rawJSON []byte, alt string, allowImageModel bool, execOptions modelExecutionOptions) (<-chan []byte, http.Header, <-chan *interfaces.ErrorMessage) {
-	modelName, rawJSON = h.maybeHijackClientCompaction(ctx, modelName, rawJSON, execOptions)
+	modelName, rawJSON, gateErr := h.gateModelAccess(ctx, entryProtocol, modelName, rawJSON, &execOptions)
+	if gateErr != nil {
+		errChan := make(chan *interfaces.ErrorMessage, 1)
+		errChan <- gateErr
+		close(errChan)
+		return nil, nil, errChan
+	}
+	if hijackedModel, hijackedJSON := h.maybeHijackClientCompaction(ctx, modelName, rawJSON, execOptions); hijackedModel != modelName {
+		// The hijack target is operator-configured, so the gate's provider narrowing does not apply.
+		modelName, rawJSON = hijackedModel, hijackedJSON
+		execOptions.AllowedProviders = nil
+	} else {
+		rawJSON = hijackedJSON
+	}
 	if combo, ok := h.resolveCombo(modelName, execOptions); ok {
 		return h.executeComboStreamWithAuthManagerFormats(ctx, combo, entryProtocol, exitProtocol, rawJSON, alt, allowImageModel, execOptions)
 	}

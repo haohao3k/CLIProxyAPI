@@ -45,7 +45,17 @@ func (h *BaseAPIHandler) executeWithAuthManager(ctx context.Context, handlerType
 }
 
 func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entryProtocol, exitProtocol, modelName string, rawJSON []byte, alt string, allowImageModel bool, execOptions modelExecutionOptions) ([]byte, http.Header, *interfaces.ErrorMessage) {
-	modelName, rawJSON = h.maybeHijackClientCompaction(ctx, modelName, rawJSON, execOptions)
+	modelName, rawJSON, gateErr := h.gateModelAccess(ctx, entryProtocol, modelName, rawJSON, &execOptions)
+	if gateErr != nil {
+		return nil, nil, gateErr
+	}
+	if hijackedModel, hijackedJSON := h.maybeHijackClientCompaction(ctx, modelName, rawJSON, execOptions); hijackedModel != modelName {
+		// The hijack target is operator-configured, so the gate's provider narrowing does not apply.
+		modelName, rawJSON = hijackedModel, hijackedJSON
+		execOptions.AllowedProviders = nil
+	} else {
+		rawJSON = hijackedJSON
+	}
 	if combo, ok := h.resolveCombo(modelName, execOptions); ok {
 		return h.executeComboWithAuthManagerFormats(ctx, combo, entryProtocol, exitProtocol, rawJSON, alt, allowImageModel, execOptions)
 	}
@@ -135,6 +145,10 @@ func (h *BaseAPIHandler) ExecuteCountWithAuthManager(ctx context.Context, handle
 }
 
 func (h *BaseAPIHandler) executeCountWithAuthManager(ctx context.Context, handlerType, modelName string, rawJSON []byte, alt string, execOptions modelExecutionOptions) ([]byte, http.Header, *interfaces.ErrorMessage) {
+	modelName, rawJSON, gateErr := h.gateModelAccess(ctx, handlerType, modelName, rawJSON, &execOptions)
+	if gateErr != nil {
+		return nil, nil, gateErr
+	}
 	if combo, ok := h.resolveCombo(modelName, execOptions); ok {
 		return h.executeComboCountWithAuthManager(ctx, combo, handlerType, rawJSON, alt, execOptions)
 	}

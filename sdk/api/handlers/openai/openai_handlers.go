@@ -21,7 +21,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
 	. "github.com/router-for-me/CLIProxyAPI/v8/internal/constant"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	responsesconverter "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/openai/openai/responses"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
@@ -54,9 +53,7 @@ func (h *OpenAIAPIHandler) HandlerType() string {
 
 // Models returns the OpenAI-compatible model metadata supported by this handler.
 func (h *OpenAIAPIHandler) Models() []map[string]any {
-	// Get dynamic models from the global registry
-	modelRegistry := registry.GetGlobalRegistry()
-	return h.AppendComboModels("openai", modelRegistry.GetAvailableModels("openai"))
+	return h.ListModels(nil, "openai")
 }
 
 // OpenAIModels handles the /v1/models endpoint.
@@ -65,7 +62,7 @@ func (h *OpenAIAPIHandler) Models() []map[string]any {
 func (h *OpenAIAPIHandler) OpenAIModels(c *gin.Context) {
 	if _, ok := c.Request.URL.Query()["client_version"]; ok {
 		clientVersion := c.Query("client_version")
-		body, errMarshal := codexmodels.MarshalCompact(h.codexClientModelsResponse(clientVersion))
+		body, errMarshal := codexmodels.MarshalCompact(h.codexClientModelsResponseFor(handlers.CallerContext(c), clientVersion))
 		if errMarshal != nil {
 			c.JSON(http.StatusInternalServerError, handlers.ErrorResponse{
 				Error: handlers.ErrorDetail{
@@ -79,8 +76,7 @@ func (h *OpenAIAPIHandler) OpenAIModels(c *gin.Context) {
 		return
 	}
 
-	// Get all available models
-	allModels := h.Models()
+	allModels := h.ListModels(handlers.CallerContext(c), "openai")
 
 	// Filter to only include the 4 required fields: id, object, created, owned_by
 	filteredModels := make([]map[string]any, len(allModels))

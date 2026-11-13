@@ -24,7 +24,6 @@ import (
 	. "github.com/router-for-me/CLIProxyAPI/v8/internal/constant"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/httpwire"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	translatorcommon "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/common"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
@@ -842,9 +841,7 @@ func (h *OpenAIResponsesAPIHandler) HandlerType() string {
 
 // Models returns the OpenAIResponses-compatible model metadata supported by this handler.
 func (h *OpenAIResponsesAPIHandler) Models() []map[string]any {
-	// Get dynamic models from the global registry
-	modelRegistry := registry.GetGlobalRegistry()
-	return h.AppendComboModels("openai", modelRegistry.GetAvailableModels("openai"))
+	return h.ListModels(nil, "openai")
 }
 
 // OpenAIResponsesModels handles the /v1/models endpoint.
@@ -853,7 +850,7 @@ func (h *OpenAIResponsesAPIHandler) Models() []map[string]any {
 func (h *OpenAIResponsesAPIHandler) OpenAIResponsesModels(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"object": "list",
-		"data":   h.Models(),
+		"data":   h.ListModels(handlers.CallerContext(c), "openai"),
 	})
 }
 

@@ -338,6 +338,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 	// Normalize model fallback combos.
 	cfg.SanitizeCombos()
+	cfg.SDKConfig.SanitizeModelExposure()
 
 	// Only conflicting legacy fields are removed on load. A legacy-only document
 	// stays legacy until a v8 configuration write explicitly migrates it.
