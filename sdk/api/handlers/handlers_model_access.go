@@ -142,7 +142,16 @@ func withSuffix(model, rawSuffix string, hasSuffix bool) string {
 // It returns the model and body to execute (changed only for an alias) and narrows
 // execOptions.AllowedProviders to the providers the caller may reach under that name.
 func (h *BaseAPIHandler) gateModelAccess(ctx context.Context, entryProtocol, modelName string, rawJSON []byte, execOptions *modelExecutionOptions) (string, []byte, *interfaces.ErrorMessage) {
-	if h == nil || execOptions.ModelAccessChecked || execOptions.InternalSource || len(execOptions.VisitedCombos) > 0 {
+	if h == nil {
+		return modelName, rawJSON, nil
+	}
+	if execOptions.ModelAccessChecked || execOptions.InternalSource || len(execOptions.VisitedCombos) > 0 {
+		// Combo members and internal calls skip the access checks, not the alias mapping.
+		cfg := h.CurrentConfig()
+		baseModel, _, _ := parseComboLookupName(modelName)
+		if alias, _ := matchCursorAlias(cfg, baseModel); alias != nil {
+			return resolveCursorAlias(alias, entryProtocol, modelName, baseModel, rawJSON, execOptions)
+		}
 		return modelName, rawJSON, nil
 	}
 	execOptions.ModelAccessChecked = true
@@ -182,18 +191,7 @@ func (h *BaseAPIHandler) gateModelAccess(ctx context.Context, entryProtocol, mod
 		if !policy.AllowsName(exposedAlias) {
 			return "", nil, modelNotAllowedError(modelName)
 		}
-		effort := rawSuffixEffort(modelName)
-		if effort == "" {
-			effort = cursor.RequestEffort(entryProtocol, baseModel, rawJSON)
-		}
-		target, _ := cursor.PickAliasVariant(alias.Variants, effort, alias.DefaultEffort)
-		if target == "" {
-			return "", nil, modelNotFoundError(modelName)
-		}
-		target = cursor.ClientModelID(target)
-		execOptions.AllowedProviders = []string{"cursor"}
-		execOptions.CursorPinned = true
-		return target, rewriteModelField(rawJSON, target), nil
+		return resolveCursorAlias(alias, entryProtocol, modelName, baseModel, rawJSON, execOptions)
 	}
 
 	candidates, viaPrefix := resolveModelCandidates(cfg, baseModel)
@@ -400,4 +398,21 @@ func rawSuffixEffort(modelName string) string {
 		return strings.TrimSpace(parsed.RawSuffix)
 	}
 	return ""
+}
+
+// resolveCursorAlias maps a configured Cursor alias to the variant for the request's effort
+// ("(level)" suffix, else the payload as the executor reads it, else default-effort) and pins it.
+func resolveCursorAlias(alias *config.CursorModelAlias, entryProtocol, modelName, baseModel string, rawJSON []byte, execOptions *modelExecutionOptions) (string, []byte, *interfaces.ErrorMessage) {
+	effort := rawSuffixEffort(modelName)
+	if effort == "" {
+		effort = cursor.RequestEffort(entryProtocol, baseModel, rawJSON)
+	}
+	target, _ := cursor.PickAliasVariant(alias.Variants, effort, alias.DefaultEffort)
+	if target == "" {
+		return "", nil, modelNotFoundError(modelName)
+	}
+	target = cursor.ClientModelID(target)
+	execOptions.AllowedProviders = []string{"cursor"}
+	execOptions.CursorPinned = true
+	return target, rewriteModelField(rawJSON, target), nil
 }

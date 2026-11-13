@@ -392,3 +392,14 @@ func TestCredentialPrefixedModelIsNotDoublePrefixed(t *testing.T) {
 		t.Fatalf("executed %q, want the registry id zp-mx/mx-glm", got.Model)
 	}
 }
+
+// A configured Cursor alias used as a combo member resolves like a direct request: the member skips
+// the access checks, not the alias mapping.
+func TestCursorAliasResolvesAsComboMember(t *testing.T) {
+	f := newModelAccessFixture(t)
+	f.cfg.Combos = append(f.cfg.Combos, config.ComboConfig{Name: "mx-alias-combo", Models: []string{"cur/mx-ds"}})
+	got, errMsg := f.run(context.Background(), "mx-alias-combo", `{"model":"mx-alias-combo","reasoning_effort":"high"}`)
+	if errMsg != nil || got != "cursor-mx-ds-high" {
+		t.Fatalf("combo member alias executed %q (err %+v), want cursor-mx-ds-high", got, errMsg)
+	}
+}
