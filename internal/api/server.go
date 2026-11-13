@@ -411,10 +411,11 @@ func (s *Server) Start() error {
 	}
 }
 
-// Stop closes listeners and immediately shuts down the API server without waiting for active connections.
+// Stop closes listeners, lets active requests finish until ctx expires, then closes the
+// remaining connections. An already-expired ctx closes immediately.
 //
 // Parameters:
-//   - ctx: Context passed for compatibility.
+//   - ctx: Bounds how long active requests may drain.
 //
 // Returns:
 //   - error: An error if the server fails to stop
@@ -444,9 +445,16 @@ func (s *Server) Stop(ctx context.Context) error {
 		}
 	}
 
-	// Close the HTTP server immediately without graceful draining.
+	// Let in-flight requests finish until ctx expires, then close whatever is left, so a
+	// restart does not cut streams that were already running (clients saw 499s).
 	var errCloseServer error
 	if s.server != nil {
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		if errDrain := s.server.Shutdown(ctx); errDrain != nil && !errors.Is(errDrain, http.ErrServerClosed) {
+			log.Infof("API server drain ended early (%v); closing remaining connections", errDrain)
+		}
 		errCloseServer = s.server.Close()
 		if errors.Is(errCloseServer, http.ErrServerClosed) || errors.Is(errCloseServer, net.ErrClosed) {
 			errCloseServer = nil

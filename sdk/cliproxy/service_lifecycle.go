@@ -270,6 +270,15 @@ func (s *Service) Shutdown(ctx context.Context) error {
 			ctx = context.Background()
 		}
 
+		// Drain the API server first, while executors, auth and config are still
+		// running, so in-flight requests can finish instead of being cancelled.
+		if s.server != nil {
+			if errStop := s.server.Stop(ctx); errStop != nil {
+				log.Errorf("error stopping API server: %v", errStop)
+				shutdownErr = errStop
+			}
+		}
+
 		s.homeMu.Lock()
 		runCancel := s.runCancel
 		s.homeMu.Unlock()
@@ -368,15 +377,6 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		}
 
 		// no legacy clients to persist
-
-		if s.server != nil {
-			if errStop := s.server.Stop(ctx); errStop != nil {
-				log.Errorf("error stopping API server: %v", errStop)
-				if shutdownErr == nil {
-					shutdownErr = errStop
-				}
-			}
-		}
 
 		if s.pluginHost != nil {
 			sdktranslator.SetPluginHooks(nil)
