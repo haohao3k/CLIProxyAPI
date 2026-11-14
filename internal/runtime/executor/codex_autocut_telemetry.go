@@ -280,8 +280,7 @@ func (s *codexAutocutTelemetryStore) ingestTurnLocked(rec CodexAutocutTurnRecord
 		acc.LastHow = how
 		acc.LastSessionID = rec.SessionID
 		acc.LastSeenAt = rec.Timestamp
-		_, tripped := codexTrippedBreakers.Load(acc.AuthID)
-		acc.CircuitBreakerTripped = tripped
+		acc.CircuitBreakerTripped = codexCircuitBreakerActive(acc.AuthID)
 	}
 }
 
@@ -552,8 +551,7 @@ func SnapshotCodexAutocutTelemetry(cfg *config.Config, explicitLogDir string, q 
 	accounts := make([]CodexAccountTelemetrySummary, 0, len(globalCodexTelemetryStore.accounts))
 	for _, acc := range globalCodexTelemetryStore.accounts {
 		cp := *acc
-		_, tripped := codexTrippedBreakers.Load(cp.AuthID)
-		cp.CircuitBreakerTripped = tripped
+		cp.CircuitBreakerTripped = codexCircuitBreakerActive(cp.AuthID)
 		if authFilter != "" {
 			if !strings.Contains(strings.ToLower(cp.AuthID), authFilter) &&
 				!strings.Contains(strings.ToLower(cp.AuthLabel), authFilter) &&

@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"math"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,7 +27,7 @@ type codexSessionViolationEntry struct {
 const codexSessionStreakTTL = 6 * time.Hour
 
 var (
-	codexViolationMu      sync.Mutex
+	codexViolationMu       sync.Mutex
 	codexSessionViolations = make(map[string]*codexSessionViolationEntry)
 )
 
@@ -330,39 +328,83 @@ func recordCodexSessionRisk(sessionID, how string) {
 // 4. 5h Quota Emergency Circuit Breaker (Iron Rule #9)
 // ============================================================================
 
-type codexCircuitBreakerTrip struct {
-	AuthID          string
-	Label           string
-	UsedPct         float64
-	RemainingPct    float64
-	MinRemainingPct int
-	TrippedAt       time.Time
+// codexCircuitBreakerHost is the auth manager: the breaker disables the
+// credential there, so the selector, the management UI and the auth file all
+// see one state, and the manager re-enables it when the 5h window resets.
+type codexCircuitBreakerHost interface {
+	GetByID(id string) (*cliproxyauth.Auth, bool)
+	TripCircuitBreaker(ctx context.Context, id, reason string, reenableAt time.Time) (bool, error)
 }
 
-var codexTrippedBreakers sync.Map // authID -> *codexCircuitBreakerTrip
+var (
+	codexBreakerHostMu sync.RWMutex
+	codexBreakerHost   codexCircuitBreakerHost
+)
 
+// SetCodexCircuitBreakerHost wires the auth manager the breaker disables credentials in.
+func SetCodexCircuitBreakerHost(host codexCircuitBreakerHost) {
+	codexBreakerHostMu.Lock()
+	codexBreakerHost = host
+	codexBreakerHostMu.Unlock()
+}
+
+func currentCodexCircuitBreakerHost() codexCircuitBreakerHost {
+	codexBreakerHostMu.RLock()
+	defer codexBreakerHostMu.RUnlock()
+	return codexBreakerHost
+}
+
+// codexBreakerFallbackWindow bounds the disable when upstream sends no reset time.
+const codexBreakerFallbackWindow = 5 * time.Hour
+
+// codexCircuitBreakerActive reports whether authID is currently disabled by the breaker.
+func codexCircuitBreakerActive(authID string) bool {
+	host := currentCodexCircuitBreakerHost()
+	if host == nil || authID == "" {
+		return false
+	}
+	current, ok := host.GetByID(authID)
+	if !ok || !(current.Disabled || current.Status == cliproxyauth.StatusDisabled) {
+		return false
+	}
+	_, marked := cliproxyauth.CircuitBreakerReenableAt(current)
+	return marked
+}
+
+// checkCodexCircuitBreakerTripped rejects a request whose credential was
+// disabled after it was selected (e.g. while it waited for a codex slot).
 func checkCodexCircuitBreakerTripped(auth *cliproxyauth.Auth) error {
 	if auth == nil || strings.TrimSpace(auth.ID) == "" {
 		return nil
 	}
-	if auth.Disabled || auth.Status == cliproxyauth.StatusDisabled {
-		return statusErr{
-			code: http.StatusServiceUnavailable,
-			msg:  fmt.Sprintf("[CIRCUIT-BREAKER] Codex credential %q is disabled.", auth.ID),
+	current := auth
+	if host := currentCodexCircuitBreakerHost(); host != nil {
+		if latest, ok := host.GetByID(auth.ID); ok {
+			current = latest
 		}
 	}
-	val, ok := codexTrippedBreakers.Load(auth.ID)
-	if !ok {
+	if !current.Disabled && current.Status != cliproxyauth.StatusDisabled {
 		return nil
 	}
-	trip := val.(*codexCircuitBreakerTrip)
-	return statusErr{
-		code: http.StatusServiceUnavailable,
-		msg: fmt.Sprintf(
-			"[CIRCUIT-BREAKER] Codex account %q is auto-disabled: 5h quota remaining %.1f%% < %d%%.",
-			trip.Label, trip.RemainingPct, trip.MinRemainingPct,
-		),
+	msg := fmt.Sprintf("[CIRCUIT-BREAKER] Codex credential %q is disabled.", auth.ID)
+	if at, ok := cliproxyauth.CircuitBreakerReenableAt(current); ok {
+		msg = fmt.Sprintf("[CIRCUIT-BREAKER] Codex credential %q is disabled until %s (5h quota below threshold).", auth.ID, at.Format(time.RFC3339))
 	}
+	return statusErr{code: http.StatusServiceUnavailable, msg: msg}
+}
+
+func codexPrimaryResetAt(headers http.Header, now time.Time) time.Time {
+	if raw := strings.TrimSpace(headers.Get("X-Codex-Primary-Reset-After-Seconds")); raw != "" {
+		if secs, err := strconv.ParseFloat(raw, 64); err == nil && secs >= 0 && !math.IsNaN(secs) && !math.IsInf(secs, 0) {
+			return now.Add(time.Duration(secs * float64(time.Second)))
+		}
+	}
+	if raw := strings.TrimSpace(headers.Get("X-Codex-Primary-Reset-At")); raw != "" {
+		if unix, err := strconv.ParseInt(raw, 10, 64); err == nil && unix > 0 {
+			return time.Unix(unix, 0)
+		}
+	}
+	return now.Add(codexBreakerFallbackWindow)
 }
 
 func observeCodexQuotaCircuitBreaker(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth, headers http.Header) {
@@ -393,54 +435,32 @@ func observeCodexQuotaCircuitBreakerWithMeta(ctx context.Context, cfg *config.Co
 	if minRemaining <= 0 || remainingPct >= float64(minRemaining) {
 		return usedPct, remainingPct, quotaDeltaPct, true
 	}
-	if _, already := codexTrippedBreakers.Load(auth.ID); already {
-		return usedPct, remainingPct, quotaDeltaPct, true
-	}
-
 	label := strings.TrimSpace(auth.Label)
 	if label == "" {
 		label = auth.ID
 	}
-	trip := &codexCircuitBreakerTrip{
-		AuthID:          auth.ID,
-		Label:           label,
-		UsedPct:         usedPct,
-		RemainingPct:    remainingPct,
-		MinRemainingPct: minRemaining,
-		TrippedAt:       time.Now(),
+	host := currentCodexCircuitBreakerHost()
+	if host == nil {
+		log.Warnf("[CIRCUIT-BREAKER] %q below threshold (remaining %.1f%% < %d%%) but no auth manager is wired; not disabling", label, remainingPct, minRemaining)
+		return usedPct, remainingPct, quotaDeltaPct, true
 	}
-	codexTrippedBreakers.Store(auth.ID, trip)
-
-	auth.Disabled = true
-	auth.Status = cliproxyauth.StatusDisabled
-	auth.StatusMessage = fmt.Sprintf("[CIRCUIT-BREAKER] Auto-disabled: 5h quota remaining %.1f%% < %d%%", remainingPct, minRemaining)
-	if auth.Metadata != nil {
-		auth.Metadata["disabled"] = true
+	reenableAt := codexPrimaryResetAt(headers, time.Now())
+	reason := fmt.Sprintf("[CIRCUIT-BREAKER] Auto-disabled: 5h quota remaining %.1f%% < %d%%, re-enable at %s", remainingPct, minRemaining, reenableAt.Format(time.RFC3339))
+	if ctx == nil {
+		ctx = context.Background()
 	}
-
-	log.Errorf(
-		"🚨 [CIRCUIT-BREAKER] TRIPPED for Codex account %q (%s) — 5h used %.1f%% (remaining %.1f%% < %d%%)! Auto-disabling credential.",
-		label, auth.ID, usedPct, remainingPct, minRemaining,
-	)
-
-	// Persist disabled=true to disk if backed by an auth file so Manager UI & watcher sync immediately.
-	authPath := ""
-	if auth.Attributes != nil {
-		authPath = strings.TrimSpace(auth.Attributes["path"])
+	tripCtx, cancelTrip := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	tripped, errTrip := host.TripCircuitBreaker(tripCtx, auth.ID, reason, reenableAt)
+	cancelTrip()
+	if errTrip != nil {
+		log.Warnf("[CIRCUIT-BREAKER] failed to disable %q (%s): %v", label, auth.ID, errTrip)
+		return usedPct, remainingPct, quotaDeltaPct, true
 	}
-	if authPath == "" && cfg != nil && strings.TrimSpace(cfg.AuthDir) != "" && strings.TrimSpace(auth.FileName) != "" {
-		authPath = filepath.Join(strings.TrimSpace(cfg.AuthDir), strings.TrimSpace(auth.FileName))
-	}
-	if authPath != "" {
-		if _, statErr := os.Stat(authPath); statErr == nil {
-			go func(p string, a *cliproxyauth.Auth) {
-				saveCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel()
-				if _, errPersist := cliproxyauth.PersistCodexAuthFile(saveCtx, p, a); errPersist != nil {
-					log.Warnf("[CIRCUIT-BREAKER] failed to persist disabled state to %s: %v", p, errPersist)
-				}
-			}(authPath, auth)
-		}
+	if tripped {
+		log.Errorf(
+			"🚨 [CIRCUIT-BREAKER] TRIPPED for Codex account %q (%s) — 5h used %.1f%% (remaining %.1f%% < %d%%)! Disabled until %s.",
+			label, auth.ID, usedPct, remainingPct, minRemaining, reenableAt.Format(time.RFC3339),
+		)
 	}
 	return usedPct, remainingPct, quotaDeltaPct, true
 }

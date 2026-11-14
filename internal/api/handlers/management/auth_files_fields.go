@@ -230,6 +230,7 @@ func setSourceAuthFileDisabled(path string, disabled bool) error {
 	}
 	coreauth.NormalizeCredentialMetadata(metadata)
 	metadata["disabled"] = disabled
+	delete(metadata, coreauth.MetadataKeyCircuitBreakerReenableAt)
 	raw, errMarshal := json.Marshal(metadata)
 	if errMarshal != nil {
 		return fmt.Errorf("marshal auth file: %w", errMarshal)
@@ -257,6 +258,7 @@ func applyAuthDisabledState(auth *coreauth.Auth, disabled bool) {
 		auth.Metadata = make(map[string]any)
 	}
 	auth.Metadata["disabled"] = disabled
+	coreauth.ClearCircuitBreakerMark(auth)
 }
 
 // PatchAuthFileFields updates arbitrary metadata fields of an auth file.
