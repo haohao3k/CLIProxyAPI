@@ -30,6 +30,18 @@ const (
 
 var astraModelRe = regexp.MustCompile(`(?i)astra`)
 
+// codexMeteringBypassNativeSolModel reports whether the -sol model is supported natively by the
+// :9gl-med metering bypass and must pass through without clamping to the gpt-6-astra fallback.
+func codexMeteringBypassNativeSolModel(model string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "gpt-6.2-sol")
+}
+
+// codexMeteringBypassAllowsHighEffortForModel reports whether high/xhigh/max reasoning effort may
+// bypass the :9gl-med medium clamp for the model. The gpt-6.2 generation opts in; ultra still clamps.
+func codexMeteringBypassAllowsHighEffortForModel(model string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "gpt-6.2")
+}
+
 func buildStaticReminder(finalizeMode bool, maxToolChars int) string {
 	if maxToolChars <= 0 {
 		maxToolChars = DefaultHardArgCap
@@ -611,18 +623,26 @@ func applyCodexMeteringClampsMap(body map[string]any, cfg *config.Config, respon
 		cxCfg = &cfg.Codex
 	}
 
-	if m, ok := body["model"].(string); ok && !cxCfg.EffectiveAllowSolModel() {
-		if strings.Contains(m, "-sol") && !strings.Contains(m, "-image") {
+	modelName, _ := body["model"].(string)
+	if modelName != "" && !cxCfg.EffectiveAllowSolModel() {
+		if strings.Contains(modelName, "-sol") && !strings.Contains(modelName, "-image") && !codexMeteringBypassNativeSolModel(modelName) {
 			body["model"] = "gpt-6-astra"
+			modelName = "gpt-6-astra"
 		}
 	}
 
 	clampEffort := func(eff string) string {
-		if !cxCfg.EffectiveAllowHighEffort() {
-			switch strings.ToLower(strings.TrimSpace(eff)) {
-			case "high", "xhigh", "max", "ultra":
-				return "medium"
+		if cxCfg.EffectiveAllowHighEffort() {
+			return eff
+		}
+		switch strings.ToLower(strings.TrimSpace(eff)) {
+		case "high", "xhigh", "max":
+			if codexMeteringBypassAllowsHighEffortForModel(modelName) {
+				return eff
 			}
+			return "medium"
+		case "ultra":
+			return "medium"
 		}
 		return eff
 	}

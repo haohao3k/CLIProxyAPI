@@ -60,7 +60,7 @@ func (e *CodexExecutor) isMeteringBypassActive(ctx context.Context, auth *clipro
 
 func (e *CodexExecutor) clampSolBaseModel(baseModel string) string {
 	if e != nil && e.cfg != nil && !e.cfg.Codex.EffectiveAllowSolModel() {
-		if strings.Contains(baseModel, "-sol") && !strings.Contains(baseModel, "-image") {
+		if strings.Contains(baseModel, "-sol") && !strings.Contains(baseModel, "-image") && !codexMeteringBypassNativeSolModel(baseModel) {
 			return "gpt-6-astra"
 		}
 	}
@@ -469,6 +469,7 @@ func (e *CodexExecutor) enforceMeteringClampsPostFinalizeDoc(doc *ojson.Doc) {
 		return
 	}
 	cxCfg := &e.cfg.Codex
+	modelAllowsHigh := codexMeteringBypassAllowsHighEffortForModel(doc.Get("model").String())
 	isHighEffort := func(eff string) bool {
 		switch strings.ToLower(strings.TrimSpace(eff)) {
 		case "high", "xhigh", "max", "ultra":
@@ -477,11 +478,22 @@ func (e *CodexExecutor) enforceMeteringClampsPostFinalizeDoc(doc *ojson.Doc) {
 			return false
 		}
 	}
+	// shouldClamp reports whether the effort value must clamp to medium. When the model opts in
+	// (gpt-6.2 generation), high/xhigh/max pass through and only ultra clamps.
+	shouldClamp := func(eff string) bool {
+		if !isHighEffort(eff) {
+			return false
+		}
+		if modelAllowsHigh {
+			return strings.EqualFold(strings.TrimSpace(eff), "ultra")
+		}
+		return true
+	}
 	if !cxCfg.EffectiveAllowHighEffort() {
-		if isHighEffort(doc.Get("reasoning.effort").String()) {
+		if shouldClamp(doc.Get("reasoning.effort").String()) {
 			_ = doc.Set("reasoning.effort", "medium")
 		}
-		if isHighEffort(doc.Get("effort").String()) {
+		if shouldClamp(doc.Get("effort").String()) {
 			_ = doc.Set("effort", "medium")
 		}
 		if input := doc.Get("input"); input.IsArray() {
@@ -489,17 +501,17 @@ func (e *CodexExecutor) enforceMeteringClampsPostFinalizeDoc(doc *ojson.Doc) {
 				if strings.TrimSpace(item.Get("type").String()) != "configuration_update" {
 					continue
 				}
-				if isHighEffort(item.Get("reasoning.effort").String()) {
+				if shouldClamp(item.Get("reasoning.effort").String()) {
 					_ = doc.Set(fmt.Sprintf("input.%d.reasoning.effort", idx), "medium")
 				}
-				if isHighEffort(item.Get("effort").String()) {
+				if shouldClamp(item.Get("effort").String()) {
 					_ = doc.Set(fmt.Sprintf("input.%d.effort", idx), "medium")
 				}
 			}
 		}
 	}
 	if !cxCfg.EffectiveAllowSolModel() {
-		if m := strings.TrimSpace(doc.Get("model").String()); strings.Contains(m, "-sol") && !strings.Contains(m, "-image") {
+		if m := strings.TrimSpace(doc.Get("model").String()); strings.Contains(m, "-sol") && !strings.Contains(m, "-image") && !codexMeteringBypassNativeSolModel(m) {
 			_ = doc.Set("model", "gpt-6-astra")
 		}
 	}

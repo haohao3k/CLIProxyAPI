@@ -951,6 +951,114 @@ func TestCodexClampsConfigurationUpdateEffortAndStripsUnsupportedFields(t *testi
 	}
 }
 
+func TestApplyCodexMeteringClampsMap_GPT62SolPassthrough(t *testing.T) {
+	enabled := true
+	cfg := &config.Config{
+		Codex: config.CodexConfig{
+			MeteringBypass: &enabled,
+		},
+	}
+
+	body := map[string]any{"model": "gpt-6.2-sol"}
+	applyCodexMeteringClampsMap(body, cfg, false)
+	if body["model"] != "gpt-6.2-sol" {
+		t.Fatalf("expected gpt-6.2-sol to pass through unclamped, got %v", body["model"])
+	}
+
+	legacy := map[string]any{"model": "gpt-6.1-sol"}
+	applyCodexMeteringClampsMap(legacy, cfg, false)
+	if legacy["model"] != "gpt-6-astra" {
+		t.Fatalf("expected legacy gpt-6.1-sol clamped to gpt-6-astra, got %v", legacy["model"])
+	}
+}
+
+func TestClampSolBaseModel_GPT62SolPassthrough(t *testing.T) {
+	enabled := true
+	e := NewCodexExecutor(&config.Config{
+		Codex: config.CodexConfig{MeteringBypass: &enabled},
+	})
+	if got := e.clampSolBaseModel("gpt-6.2-sol"); got != "gpt-6.2-sol" {
+		t.Fatalf("expected gpt-6.2-sol passthrough, got %q", got)
+	}
+	if got := e.clampSolBaseModel("gpt-6.2-sol-xhigh"); got != "gpt-6.2-sol-xhigh" {
+		t.Fatalf("expected suffixed gpt-6.2-sol-xhigh passthrough, got %q", got)
+	}
+	if got := e.clampSolBaseModel("gpt-6.1-sol"); got != "gpt-6-astra" {
+		t.Fatalf("expected gpt-6.1-sol clamped, got %q", got)
+	}
+}
+
+func TestApplyCodexMeteringClampsMap_GPT62HighEffortAllowed(t *testing.T) {
+	enabled := true
+	cfg := &config.Config{
+		Codex: config.CodexConfig{
+			MeteringBypass: &enabled,
+		},
+	}
+
+	for _, eff := range []string{"high", "xhigh", "max"} {
+		body := map[string]any{
+			"model":     "gpt-6.2-astra",
+			"reasoning": map[string]any{"effort": eff, "summary": "auto"},
+		}
+		applyCodexMeteringClampsMap(body, cfg, false)
+		rMap, _ := body["reasoning"].(map[string]any)
+		if rMap["effort"] != eff {
+			t.Fatalf("gpt-6.2-astra: expected %s effort preserved, got %v", eff, rMap["effort"])
+		}
+	}
+
+	body := map[string]any{
+		"model":     "gpt-6.2-sol",
+		"reasoning": map[string]any{"effort": "ultra", "summary": "auto"},
+	}
+	applyCodexMeteringClampsMap(body, cfg, false)
+	rMap, _ := body["reasoning"].(map[string]any)
+	if rMap["effort"] != "medium" {
+		t.Fatalf("gpt-6.2-sol: expected ultra clamped to medium, got %v", rMap["effort"])
+	}
+
+	// Regression: legacy astra model still clamps high effort to medium.
+	legacy := map[string]any{
+		"model":     "gpt-6-astra",
+		"reasoning": map[string]any{"effort": "xhigh", "summary": "auto"},
+	}
+	applyCodexMeteringClampsMap(legacy, cfg, false)
+	legacyMap, _ := legacy["reasoning"].(map[string]any)
+	if legacyMap["effort"] != "medium" {
+		t.Fatalf("gpt-6-astra: expected xhigh clamped to medium, got %v", legacyMap["effort"])
+	}
+}
+
+func TestEnforceMeteringClampsPostFinalizeDoc_GPT62EffortPreserved(t *testing.T) {
+	enabled := true
+	e := NewCodexExecutor(&config.Config{
+		Codex: config.CodexConfig{MeteringBypass: &enabled},
+	})
+
+	doc := ojson.NewDocString(`{"model":"gpt-6.2-astra","reasoning":{"effort":"xhigh","summary":"auto"},"input":[{"type":"configuration_update","reasoning":{"effort":"max"}}]}`)
+	e.enforceMeteringClampsPostFinalizeDoc(doc)
+	if got := doc.Get("reasoning.effort").String(); got != "xhigh" {
+		t.Fatalf("expected top-level xhigh preserved for gpt-6.2-astra, got %q", got)
+	}
+	if got := doc.Get("input.0.reasoning.effort").String(); got != "max" {
+		t.Fatalf("expected configuration_update max preserved for gpt-6.2-astra, got %q", got)
+	}
+
+	doc = ojson.NewDocString(`{"model":"gpt-6.2-sol","reasoning":{"effort":"ultra","summary":"auto"}}`)
+	e.enforceMeteringClampsPostFinalizeDoc(doc)
+	if got := doc.Get("reasoning.effort").String(); got != "medium" {
+		t.Fatalf("expected ultra clamped to medium for gpt-6.2-sol, got %q", got)
+	}
+
+	// Regression: legacy model effort still clamps post-finalize.
+	doc = ojson.NewDocString(`{"model":"gpt-6.1-sol","reasoning":{"effort":"xhigh","summary":"auto"}}`)
+	e.enforceMeteringClampsPostFinalizeDoc(doc)
+	if got := doc.Get("reasoning.effort").String(); got != "medium" {
+		t.Fatalf("expected xhigh clamped to medium for gpt-6.1-sol, got %q", got)
+	}
+}
+
 func TestExtractSummaryFromExternalSSEFallback(t *testing.T) {
 	sseResp := strings.Join([]string{
 		"event: response.created",
