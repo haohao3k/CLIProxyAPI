@@ -51,13 +51,23 @@ func SanitizeMistralChatRequestDoc(doc *ojson.Doc, baseURL string) {
 	// Pass 1 (forward): normalize OpenAI "developer" role and mid-conversation "system"
 	// roles so Mistral's strict union tag ('system'|'user'|'assistant'|'tool') and
 	// ordering rule (no 'system' after 'assistant'/'tool') never fail with HTTP 422.
+	// Tool messages must also carry a string content: OpenAI permits omitting it or
+	// sending null, while Mistral rejects both with 422 "Field required"
+	// (body.messages[n].tool.content), so default them to an empty string.
 	sawAssistantOrTool := false
 	for i, message := range messages {
 		role := strings.ToLower(strings.TrimSpace(message.Get("role").String()))
 		path := fmt.Sprintf("messages.%d", i)
 		switch role {
-		case "assistant", "tool":
+		case "assistant":
 			sawAssistantOrTool = true
+		case "tool":
+			sawAssistantOrTool = true
+			if content := message.Get("content"); !content.Exists() || content.Type == ojson.Null {
+				_ = doc.Set(path+".content", "")
+			} else {
+				flattenTextOnlyChatContentDoc(doc, path, content)
+			}
 		case "developer":
 			if sawAssistantOrTool {
 				_ = doc.Set(path+".role", "user")

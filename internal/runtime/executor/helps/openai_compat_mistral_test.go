@@ -160,3 +160,55 @@ func TestSanitizeMistralChatRequestDocPreservesConversation(t *testing.T) {
 		})
 	}
 }
+
+func TestSanitizeMistralChatRequestDocDefaultsToolContent(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			// Shape observed in production: tool results without a content field
+			// (Mistral 422 "Field required" at body.messages[n].tool.content).
+			name: "missing tool content becomes empty string",
+			in:   `{"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":null,"tool_calls":[{"id":"call00001","type":"function","function":{"name":"terminal","arguments":"{}"}}]},{"role":"tool","tool_call_id":"call00001"}]}`,
+			want: `{"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":null,"tool_calls":[{"id":"call00001","type":"function","function":{"name":"terminal","arguments":"{}"}}]},{"role":"tool","tool_call_id":"call00001","content":""}]}`,
+		},
+		{
+			name: "null tool content becomes empty string",
+			in:   `{"messages":[{"role":"tool","tool_call_id":"call00002","content":null}]}`,
+			want: `{"messages":[{"role":"tool","tool_call_id":"call00002","content":""}]}`,
+		},
+		{
+			name: "empty array tool content becomes empty string",
+			in:   `{"messages":[{"role":"tool","tool_call_id":"call00003","content":[]}]}`,
+			want: `{"messages":[{"role":"tool","tool_call_id":"call00003","content":""}]}`,
+		},
+		{
+			name: "text part array tool content flattened",
+			in:   `{"messages":[{"role":"tool","tool_call_id":"call00004","content":[{"type":"text","text":"result line 1"},{"type":"text","text":"line 2"}]}]}`,
+			want: `{"messages":[{"role":"tool","tool_call_id":"call00004","content":"result line 1\nline 2"}]}`,
+		},
+		{
+			name: "string tool content untouched",
+			in:   `{"messages":[{"role":"tool","tool_call_id":"call00005","content":"ok"}]}`,
+			want: `{"messages":[{"role":"tool","tool_call_id":"call00005","content":"ok"}]}`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			doc := ojson.NewDocString(tc.in)
+			SanitizeMistralChatRequestDoc(doc, "https://api.mistral.ai/v1")
+			body := doc.Bytes()
+			if !reflect.DeepEqual(ojson.ParseBytes(body).Value(), ojson.Parse(tc.want).Value()) {
+				t.Fatalf("payload = %s, want %s", body, tc.want)
+			}
+		})
+	}
+	// Non-Mistral upstreams keep tool messages exactly as sent.
+	const other = `{"messages":[{"role":"tool","tool_call_id":"call00006"}]}`
+	doc := ojson.NewDocString(other)
+	SanitizeMistralChatRequestDoc(doc, "https://api.deepseek.com/v1")
+	if string(doc.Bytes()) != other {
+		t.Fatalf("non-Mistral payload changed: %s", doc.Bytes())
+	}
+}
