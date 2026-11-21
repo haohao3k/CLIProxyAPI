@@ -5032,3 +5032,52 @@ func TestRegressionIssue6505_DevinClaudeStreamingNoFullInputEstimate(t *testing.
 		runTest(t, 10, 0)
 	})
 }
+
+func TestDevinExecutor_LocalRequestRateLimit(t *testing.T) {
+	hits := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.Header().Set("Content-Type", "application/connect+proto")
+		_, _ = w.Write(helps.WrapConnectEnvelopeWithFlag(helps.ConnectFlagEndStream, []byte(`{}`)))
+	}))
+	defer server.Close()
+	exec := NewDevinExecutor(&config.Config{})
+	newAuth := func(id string) *cliproxyauth.Auth {
+		return &cliproxyauth.Auth{ID: id, Provider: "devin", Attributes: map[string]string{"api_key": "test-key", "base_url": server.URL}}
+	}
+	req := cliproxyexecutor.Request{Model: "devin/swe-2", Payload: []byte(`{"model":"devin/swe-2","messages":[{"role":"user","content":"hi"}]}`)}
+	opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatOpenAI, OriginalRequest: req.Payload}
+
+	full := newAuth("devin-rpm-full-" + uuid.NewString())
+	for i := 0; i < helps.DevinRequestsPerMinute; i++ {
+		if wait := devinRequestLimiter.Admit(full.ID); wait != 0 {
+			t.Fatalf("request %d refused while filling the window, wait=%v", i+1, wait)
+		}
+	}
+	assertRefused := func(err error) {
+		t.Helper()
+		refused, ok := err.(statusErr)
+		if !ok {
+			t.Fatalf("error = %v (%T), want statusErr", err, err)
+		}
+		if refused.StatusCode() != http.StatusTooManyRequests || !refused.IsTransientRateLimit() || refused.IsCredentialScoped() {
+			t.Fatalf("refusal = %+v, want a transient, non credential-scoped 429", refused)
+		}
+		if wait := refused.RetryAfter(); wait == nil || *wait <= 0 || *wait > time.Minute {
+			t.Fatalf("RetryAfter = %v, want within the next minute", wait)
+		}
+	}
+	_, errExecute := exec.Execute(context.Background(), full, req, opts)
+	assertRefused(errExecute)
+	_, errExecuteStream := exec.ExecuteStream(context.Background(), full, req, opts)
+	assertRefused(errExecuteStream)
+	if hits != 0 {
+		t.Fatalf("a refused request reached upstream %d times", hits)
+	}
+
+	// Another credential keeps its own window.
+	_, _ = exec.Execute(context.Background(), newAuth("devin-rpm-free-"+uuid.NewString()), req, opts)
+	if hits != 1 {
+		t.Fatalf("upstream hits = %d, want 1 for the credential with a free window", hits)
+	}
+}

@@ -82,6 +82,28 @@ func NewDevinExecutor(cfg *config.Config) *DevinExecutor {
 	}
 }
 
+// devinRequestLimiter is shared by every executor instance, so a config reload keeps the windows.
+var devinRequestLimiter = helps.NewDevinRequestLimiter(helps.DevinRequestsPerMinute, nil)
+
+// admitDevinRequest enforces the per-credential request rate before an upstream call. A refusal
+// is a transient 429: the scheduler cools only this model on this credential until a slot frees,
+// records no quota exhaustion, and moves the request to the next credential or combo member.
+func admitDevinRequest(auth *cliproxyauth.Auth) error {
+	if auth == nil {
+		return nil
+	}
+	wait := devinRequestLimiter.Admit(auth.ID)
+	if wait <= 0 {
+		return nil
+	}
+	return statusErr{
+		code:               http.StatusTooManyRequests,
+		msg:                fmt.Sprintf("devin: local limit of %d requests per minute reached for this credential", helps.DevinRequestsPerMinute),
+		retryAfter:         &wait,
+		transientRateLimit: true,
+	}
+}
+
 // Identifier returns the unique provider key for Devin.
 func (e *DevinExecutor) Identifier() string {
 	return "devin"
@@ -243,6 +265,9 @@ func (e *DevinExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		return e.executeDevinResponsesCompaction(ctx, auth, req, opts)
 	}
 	targetModel := thinking.ParseSuffix(req.Model).ModelName
+	if errAdmit := admitDevinRequest(auth); errAdmit != nil {
+		return resp, errAdmit
+	}
 
 	reporter := helps.NewExecutorUsageReporter(ctx, e, targetModel, auth)
 	defer reporter.TrackFailure(ctx, &err)
@@ -339,6 +364,9 @@ func (e *DevinExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		return e.executeDevinResponsesCompactionStream(ctx, auth, req, opts)
 	}
 	targetModel := thinking.ParseSuffix(req.Model).ModelName
+	if errAdmit := admitDevinRequest(auth); errAdmit != nil {
+		return nil, errAdmit
+	}
 
 	reporter := helps.NewExecutorUsageReporter(ctx, e, targetModel, auth)
 	defer reporter.TrackFailure(ctx, &err)
