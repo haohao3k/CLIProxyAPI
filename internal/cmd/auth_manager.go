@@ -21,6 +21,7 @@ func newAuthManager() *sdkAuth.Manager {
 		sdkAuth.NewKimiAIDotAuthenticator(),
 		sdkAuth.NewCursorAuthenticator(),
 		sdkAuth.NewXAIAuthenticator(),
+		sdkAuth.CopilotAuthenticator{},
 		sdkAuth.NewDevinAuthenticator(),
 		sdkAuth.NewMetaAuthenticator(),
 		sdkAuth.NewMistralAuthenticator(),
