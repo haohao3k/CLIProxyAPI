@@ -221,9 +221,10 @@ func ResolveDevinChatModelUID(rawModel string, thinkingLevel string, budgetToken
 		return canonicalBase
 	}
 
-	// 8. Lightning tier: upstream UIDs keep the effort before the suffix
-	// (swe-2-high-lightning), unlike every other model which appends effort.
-	if strings.HasSuffix(canonicalBase, "-lightning") {
+	// 8. SWE lightning tier: upstream UIDs keep the effort before the suffix
+	// (swe-2-high-lightning), unlike every other model which appends effort. Elsewhere
+	// "lightning" is part of the model name (nemotron-3-5-lightning-high).
+	if strings.HasPrefix(canonicalBase, "swe-") && strings.HasSuffix(canonicalBase, "-lightning") {
 		stem := strings.TrimSuffix(canonicalBase, "-lightning")
 		if HasDevinEffortSuffix(stem) {
 			// Already a full upstream UID such as swe-2-high-lightning

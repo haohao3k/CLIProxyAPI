@@ -673,6 +673,32 @@ func TestResolveDevinChatModelUID(t *testing.T) {
 			want:          "swe-2-max-lightning",
 		},
 		{
+			name:     "swe-2-flash-lightning default maps to swe-2-flash-high-lightning",
+			rawModel: "devin/swe-2-flash-lightning",
+			want:     "swe-2-flash-high-lightning",
+		},
+		{
+			name:     "nemotron-3-5-lightning keeps lightning in the name and appends the default effort",
+			rawModel: "devin/nemotron-3-5-lightning",
+			want:     "nemotron-3-5-lightning-high",
+		},
+		{
+			name:          "nemotron-3-5-lightning with none effort",
+			rawModel:      "devin/nemotron-3-5-lightning",
+			thinkingLevel: "none",
+			want:          "nemotron-3-5-lightning-none",
+		},
+		{
+			name:     "gemini-4-neon default maps to high",
+			rawModel: "devin/gemini-4-neon",
+			want:     "gemini-4-neon-high",
+		},
+		{
+			name:     "gemini-4-neon xhigh suffix",
+			rawModel: "devin/gemini-4-neon(xhigh)",
+			want:     "gemini-4-neon-xhigh",
+		},
+		{
 			name:          "swe-2-high-lightning direct UID passes through",
 			rawModel:      "devin/swe-2-high-lightning",
 			thinkingLevel: "",
